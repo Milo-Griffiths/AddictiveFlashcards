@@ -152,12 +152,26 @@ async function fetchDeck() {
     }
   }
   const ex = await loadExplanations();
-  const cards = info.map((c) => ({
+  // each deck's learning / relearning steps (minutes), so offline re-shows match Anki's timing
+  const steps = {};
+  for (const d of new Set(info.map((c) => c.deckName))) {
+    try { const k = await anki('getDeckConfig', { deck: d }); steps[d] = [k.new.delays, k.lapse.delays]; } catch {}
+  }
+  const cards = info.map((c) => {
+    const [learnSteps, lapseSteps] = steps[c.deckName] || [[1, 10], [10]];
+    const phase = c.type === 0 ? 'new' : c.type === 1 ? 'learn' : c.type === 3 ? 'relearn' : 'review';
+    const list = phase === 'relearn' ? lapseSteps : learnSteps;
+    const left = (c.left || 0) % 1000;
+    return {
     id: c.cardId, note: c.note, deck: c.deckName, isNew: c.type === 0, learn: c.type === 1 || c.type === 3,
+    phase, steps: learnSteps, lapse: lapseSteps,
+    step: phase === 'learn' || phase === 'relearn' ? Math.max(0, list.length - left) : 0,
+    // intraday learning cards (queue 1) carry an epoch-seconds due time
+    notBefore: c.queue === 1 && c.due > 1e9 ? Math.max(0, c.due * 1000) : 0,
     topic: topicOf[c.note] || null, ex: ex[c.note] || null,
     q: clean(c.question), a: splitAnswer(c.question, c.answer),
     next: (c.nextReviews || []).map((s) => s.replace(/[⁨⁩]/g, '')),
-  }));
+  }; });
   await inlineMedia(cards);
   // reviews in due order, new cards woven in every ~4th slot
   const revs = cards.filter((c) => !c.isNew), news = cards.filter((c) => c.isNew), out = [];
@@ -258,14 +272,16 @@ function fit(el) { // shrink text until it fits, then allow internal scrolling
 
 function render(force) {
   const stage = $('#stage');
-  const v = view();
-  if (force || !cur) { cur = v[0] || null; }
+  const v = view(), now = Date.now();
+  let ready = v.filter((c) => !c.notBefore || c.notBefore <= now);
+  if (!ready.length) ready = v.filter((c) => c.notBefore <= now + 20 * 60e3).sort((a, b) => a.notBefore - b.notBefore);
+  if (force || !cur) { cur = ready[0] || null; }
   stage.innerHTML = '';
   curEl = nextEl = null;
   $('#done').hidden = !!cur;
   heat();
   if (!cur) { showCombo(); showDone(); updateBar(); setStatus(); return; }
-  const nx = v.find((c) => c !== cur);
+  const nx = ready.find((c) => c !== cur);
   if (nx) { nextEl = makeCard(nx, true); stage.appendChild(nextEl); }
   curEl = makeCard(cur, false); stage.appendChild(curEl);
   fit(curEl);
@@ -279,7 +295,14 @@ function updateBar() {
 }
 
 function showDone() {
-  const others = cfg.topic ? deck.length : 0;
+  const waiting = view().filter((c) => c.notBefore > Date.now());
+  if (waiting.length) {
+    const mins = Math.max(1, Math.ceil((Math.min(...waiting.map((c) => c.notBefore)) - Date.now() - 20 * 60e3) / 60e3));
+    $('#refresh').textContent = 'Check for more';
+    $('#doneStats').textContent = `${waiting.length} in learning · next one in ${mins} min`;
+    return;
+  }
+  const others = cfg.topic ? view().length === 0 && deck.length : 0;
   $('#refresh').textContent = others ? 'Show all topics' : 'Check for more';
   if (others) { $('#doneStats').textContent = `No ${topicName(cfg.topic)} cards left · ${others} in other topics`; return; }
   $('#doneStats').textContent = stats.reviewed
@@ -352,13 +375,14 @@ function answer(ease, dir, px, py) {
   const at = deck.indexOf(card); deck.splice(at < 0 ? 0 : at, 1);
   closeExplain();
 
-  // Mimic Anki's same-day learning steps so the whole day works offline.
-  const learning = card.isNew || card.learn;
+  // Follow Anki's learning steps locally (with their real delays) so the day works offline
+  // and cards come back exactly when Anki would show them, not sooner or more often.
+  const ns = nextStep(card, ease);
   let again = null;
-  if (ease === 1) again = { ...card, learn: true, seen: 0, next: null, isNew: false };
-  else if (learning && ease < 4 && (card.seen || 0) < 1) again = { ...card, seen: (card.seen || 0) + 1, next: null };
-  if (again) { deck.splice(posAfter(ease === 1 ? 4 : 8), 0, again); h.reinserted = again; }
-  else doneCount++;
+  if (ns) {
+    again = { ...card, ...ns, isNew: false, learn: true, next: null, notBefore: Date.now() + ns.wait * 60e3 };
+    deck.splice(posAfter(3), 0, again); h.reinserted = again;
+  } else doneCount++;
 
   stats.reviewed++; if (ease > 1) stats.correct++;
   const broke = ease <= 2 && combo >= 3 ? combo : 0;   // Again and Hard both end the streak
@@ -391,6 +415,24 @@ function answer(ease, dir, px, py) {
 
   scheduleFlush(); setStatus(); updateUndo();
 }
+// Anki (v3) learning-step rules. Returns the card's next local state, or null if it leaves today's queue.
+function nextStep(card, ease) {
+  const phase = card.phase || (card.isNew ? 'new' : card.learn ? 'learn' : 'review');
+  const learnSteps = card.steps && card.steps.length ? card.steps : [1, 10];
+  const lapseSteps = card.lapse && card.lapse.length ? card.lapse : [10];
+  if (phase === 'review') return ease === 1 ? { phase: 'relearn', step: 0, wait: lapseSteps[0] } : null;
+  const list = phase === 'relearn' ? lapseSteps : learnSteps;
+  const p = phase === 'relearn' ? 'relearn' : 'learn';
+  const step = phase === 'new' ? 0 : Math.min(card.step || 0, list.length - 1);
+  if (ease === 4) return null;                                        // Easy graduates
+  if (ease === 1) return { phase: p, step: 0, wait: list[0] };        // Again: back to the first step
+  if (ease === 2) {                                                   // Hard: repeat this step
+    const w = step === 0 ? (list.length > 1 ? (list[0] + list[1]) / 2 : list[0] * 1.5) : list[step];
+    return { phase: p, step, wait: w };
+  }
+  return step + 1 < list.length ? { phase: p, step: step + 1, wait: list[step + 1] } : null; // Good: next step or graduate
+}
+
 const OFF = (dir) => ({ left: [-innerWidth * 1.3, 0, -20], right: [innerWidth * 1.3, 0, 20], up: [0, -innerHeight * 1.1, 0], down: [0, innerHeight * 1.1, 0] }[dir] || [0, -innerHeight, 0]);
 
 /* Rewards escalate with the combo. Milestones: 5, 10, 15, 20, 25, ... */
@@ -466,6 +508,7 @@ function canUndo() {
 }
 function updateUndo() { $('#undo').classList.toggle('on', canUndo()); }
 setInterval(updateUndo, 1000);
+setInterval(() => { if (!cur && view().length && $('#sheet').hidden) render(true); }, 30000);
 
 function undo() {
   const h = history[history.length - 1];

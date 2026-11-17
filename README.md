@@ -19,7 +19,7 @@ As you drag, the card shows the grade and the next interval Anki would give it. 
 - Each note has a `Topic::` tag (Architecture, Haskell, C, SoftwareTools, Maths, Psychology, Geography). Tap the layers icon in the top right to review one topic at a time. The filter works offline on the cards already downloaded.
 
 ## All-day offline
-Open the app once in the morning while the Mac is on, and it downloads the whole day's cards, including learning cards due later. After that you can review all day with the Mac closed. Cards you get wrong, and new or learning cards, come back later in the session the way Anki's learning steps would. Answers are kept on the phone and sent the next time Anki can be reached. Anki then schedules them as of that moment, so intervals can be off by about a day.
+Open the app once in the morning while the Mac is on, and it downloads the whole day's cards, including learning cards due later. After that you can review all day with the Mac closed. Cards you get wrong, and new or learning cards, come back after their real Anki step delay (from your deck options, e.g. 1 min then 10 min). If nothing else is left, they can come up to 20 minutes early, the same as Anki's "learn ahead". Answers are kept on the phone and sent the next time Anki can be reached. Anki then schedules them as of that moment, so intervals can be off by about a day.
 
 ## How sync works
 
