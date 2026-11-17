@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Flow Cards</title>
+<meta name="description" content="Swipe-through Anki flashcards that sync with AnkiConnect.">
+<meta name="theme-color" content="#0a0a0d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Flow">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="fx"></canvas>
+
+<header id="top">
+  <button id="status" class="pill" aria-label="Sync status"><i></i><span>—</span></button>
+  <div id="combo" aria-live="polite"></div>
+  <button id="gear" class="icon" aria-label="Settings">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
+  </button>
+  <div id="bar"><b></b></div>
+</header>
+
+<main id="stage"></main>
+
+<div id="hint" hidden>
+  <div>tap to flip</div>
+  <div class="row"><span>← again</span><span>↑ good</span><span>easy →</span></div>
+  <div>↓ hard</div>
+</div>
+
+<section id="done" hidden>
+  <div class="big">All caught up</div>
+  <div id="doneStats"></div>
+  <button id="refresh" class="ghost">Check for more</button>
+</section>
+
+<div id="sheet" hidden>
+  <div class="scrim"></div>
+  <form class="panel" autocomplete="off" onsubmit="return false">
+    <div class="grab"></div>
+    <h2>Settings</h2>
+    <label>AnkiConnect URL
+      <input id="sUrl" type="url" inputmode="url" placeholder="https://your-mac.tailnet.ts.net" spellcheck="false" autocapitalize="off">
+    </label>
+    <label>API key <small>(optional)</small>
+      <input id="sKey" type="password" placeholder="matches AnkiConnect apiKey">
+    </label>
+    <label>Deck
+      <select id="sDeck"><option value="">All decks</option></select>
+    </label>
+    <div class="two">
+      <label>New cards
+        <input id="sNew" type="number" min="0" max="200" inputmode="numeric">
+      </label>
+      <label>Review cap
+        <input id="sRev" type="number" min="1" max="2000" inputmode="numeric">
+      </label>
+    </div>
+    <label class="tog"><input id="sWeb" type="checkbox"> Sync Anki to AnkiWeb after reviews</label>
+    <label class="tog"><input id="sSound" type="checkbox"> Sound</label>
+    <p id="sMsg"></p>
+    <div class="btns">
+      <button id="sSave" class="primary" type="button">Save &amp; sync</button>
+      <button id="sDemo" class="ghost" type="button">Try demo deck</button>
+    </div>
+  </form>
+</div>
+
+<label id="hap" aria-hidden="true"><input type="checkbox" switch></label>
+<script src="app.js"></script>
+</body>
+</html>
