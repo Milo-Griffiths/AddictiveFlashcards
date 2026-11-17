@@ -34,13 +34,15 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
   background: var(--bg);
 }
 /* the left side shrinks (with an ellipsis) so its text can never slide under the buttons on the right */
-#top .left { display: flex; align-items: center; gap: 4px; flex: 1 1 auto; min-width: 0; overflow: hidden; }
-#top .right { flex: none; }
+/* the count on the left never shrinks; the topic button on the right gives way instead */
+#top .left { display: flex; align-items: center; gap: 4px; flex: none; }
+#top .right { flex: 0 1 auto; min-width: 0; }
 .pill {
-  display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 12px; border-radius: 99px; min-width: 0; max-width: 100%;
+  display: flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 10px; border-radius: 99px;
   font-size: 15px; font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap;
 }
-.pill span { overflow: hidden; text-overflow: ellipsis; }
+.pill .n, .pill .st { flex: none; white-space: nowrap; }
+.pill .st { color: var(--dim); }
 .pill i { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #666; transition: background .3s; }
 .pill.ok i { background: var(--good); box-shadow: 0 0 8px var(--good); }
 .pill.pending i { background: var(--accent); }
@@ -50,10 +52,10 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .icon:active, .tbtn:active, .pill:active { background: var(--card2); }
 /* topic / practice picker: a labelled button instead of an icon */
 .tbtn {
-  display: flex; align-items: center; gap: 6px; height: 36px; max-width: 150px; padding: 0 12px; border-radius: 99px;
+  display: flex; align-items: center; gap: 6px; height: 36px; max-width: 150px; min-width: 0; flex: 0 1 auto; padding: 0 12px; border-radius: 99px;
   border: 1px solid var(--line); background: var(--card); color: var(--text); font-size: 15px; font-weight: 500;
 }
-.tbtn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tbtn span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tbtn svg { flex: none; color: var(--dim); }
 .tbtn.topic { border-color: rgba(255,201,77,.45); color: var(--accent); }
 .tbtn.practice { border-color: rgba(196,156,255,.5); color: #c49cff; }
@@ -317,3 +319,21 @@ body:has(#flash.again) #stage { animation: shake .35s; }
 body.practice .card:not(.next) { border-color: rgba(196,156,255,.45); }
 body.practice .card .foot .tag { color: #c49cff; }
 #done2 { margin-top: -4px; }
+
+/* diagrams (inline SVG in explanations). Draw with these classes so they follow the app's theme:
+   .w wire/line, .g shape body, .a accent (gold), text.m muted, text.sm small, .dot junction. */
+#exBody svg, #zoom svg { display: block; width: 100%; height: auto; margin: 14px 0; color: var(--text); overflow: visible; }
+#exBody svg { max-height: 48vh; cursor: zoom-in; }
+#exBody svg text, #zoom svg text { fill: currentColor; font: 13px ui-monospace, Menlo, monospace; }
+svg .w { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+svg .g { fill: var(--card2); stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
+svg .a { stroke: var(--accent); }
+svg text.a, svg .af { fill: var(--accent); stroke: none; }
+svg .gf { fill: var(--good); stroke: none; }
+svg text.m { fill: var(--dim); }
+svg text.sm { font-size: 11px; }
+svg .dot { fill: currentColor; }
+#zoom { position: fixed; inset: 0; z-index: 45; background: var(--bg); overflow: auto; touch-action: pan-x pan-y;
+  display: flex; align-items: center; padding: calc(var(--safe-t) + 20px) 12px calc(var(--safe-b) + 44px); }
+#zoom .inner { flex: none; width: 170%; max-width: 900px; }  /* left-aligned so nothing is cut off; JS scrolls it to the middle */
+#zoom p { position: fixed; bottom: calc(var(--safe-b) + 18px); left: 0; right: 0; text-align: center; color: var(--dim); font-size: 13px; margin: 0; }

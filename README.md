@@ -119,7 +119,7 @@ Installed, it opens full-screen and keeps working offline.
 
 Open the app once while Anki is reachable, and it downloads the whole day's cards, including learning cards due later. After that you can review with the computer closed. Cards you get wrong, and new or learning cards, come back after their real Anki step delay (from your deck options, e.g. 1 min then 10 min). If nothing else is left, they can come up to 20 minutes early, like Anki's "learn ahead". Answers wait on the device and are sent the next time Anki can be reached. Anki schedules them as of that moment, so intervals can be off by about a day.
 
-The dot next to the cards-left count (top left) shows the state: **green** synced, **blinking blue** syncing, **amber** answers waiting (shown as e.g. **↑3**), **grey** offline. Tap it to force a sync.
+The dot next to the cards-left count (top left) shows the state: **green** synced, **blinking blue** syncing, **amber** answers waiting (shown as e.g. **↑3**; on a narrow screen this note is hidden, but the count always shows), **grey** offline. Tap it to force a sync.
 
 ## Topics and practice mode
 
@@ -133,7 +133,7 @@ The dot next to the cards-left count (top left) shows the state: **green** synce
 Each card can have a short explanation that appears behind an **Explain** button after you flip it, and opens by itself after Hard or Again. Explanations live in **one JSON file in Anki's media folder**, so they sync through AnkiWeb with your collection, and you don't need to change any note type or field:
 
 - File name: `_flowcards_explanations.json` (the leading underscore stops Anki's *Check Media* from deleting it).
-- Contents: an object mapping **note IDs** (as strings) to an HTML snippet. Simple tags work best: `<p> <b> <i> <code> <pre> <ul> <ol> <li> <table> <tr> <th> <td>`. The HTML is shown as-is, so only use explanation files you wrote or trust.
+- Contents: an object mapping **note IDs** (as strings) to an HTML snippet. Simple tags work best: `<p> <b> <i> <code> <pre> <ul> <ol> <li> <table> <tr> <th> <td>`. Inline `<svg>` diagrams work too: give lines `class="w"`, shapes `class="g"`, and highlights `class="a"`, and they'll follow the app's colours. Tap a diagram to zoom. Anything that could run code (scripts, `on…` attributes, `javascript:` links) is stripped before display.
 
 ```json
 {

@@ -288,7 +288,7 @@ async function sync(refetch = true, all = false) {
 }
 
 function setStatus() {
-  const el = $('#status'), t = el.querySelector('span');
+  const el = $('#status'), t = el.querySelector('.n'), st = el.querySelector('.st');
   const waiting = queue.length + tagQueue.length;
   el.className = 'pill ' + (syncing ? 'busy' : waiting ? 'pending' : online || cfg.demo ? 'ok' : '') + (practice ? ' practice' : '');
   const left = view().length;
@@ -296,12 +296,21 @@ function setStatus() {
   // (no "syncing" word: the dot blinks blue while it syncs, and the extra text crowded the header)
   // waiting answers show as "↑3" (3 waiting to upload) so it fits beside a long topic name on a phone
   const state = cfg.demo ? 'demo' : waiting ? `↑${waiting}` : online || syncing ? '' : 'offline';
-  t.textContent = !cfg.url && !cfg.demo ? 'Set up' : `${left} left` + (state ? ` · ${state}` : '');
+  t.textContent = !cfg.url && !cfg.demo ? 'Set up' : `${left} left`;
+  st.textContent = !cfg.url && !cfg.demo ? '' : state ? `· ${state}` : '';
   el.setAttribute('aria-label', `${left} cards left` + (waiting ? `, ${waiting} waiting to sync` : '') + '. Tap to sync now.');
   // the topic / practice button says what you're looking at
   const b = $('#topicBtn');
   $('#topicLbl').textContent = practice ? 'Practice' : cfg.topic ? topicName(cfg.topic) : 'All topics';
   b.className = 'tbtn' + (practice ? ' practice' : cfg.topic ? ' topic' : '');
+  fitHeader();
+}
+// The cards-left count never shrinks. If the header is too narrow, the topic label shortens first,
+// and the small sync note (↑3 / offline / demo) is dropped before the label gets cut short.
+function fitHeader() {
+  const st = $('#status .st'), lbl = $('#topicLbl');
+  st.hidden = false;
+  if (lbl.scrollWidth > lbl.clientWidth + 1) st.hidden = true;
 }
 
 /* ---------- rendering ---------- */
@@ -413,14 +422,37 @@ function openExplain(c, auto) {
     recap.firstChild.innerHTML = c.q; recap.lastChild.innerHTML = c.a;
     formatCode(recap, lang, true);
   }
-  $('#exBody').innerHTML = c.ex;
+  $('#exBody').innerHTML = safeHtml(c.ex);
   formatCode($('#exBody'), lang, false);
+  for (const d of $('#exBody').querySelectorAll('svg')) d.onclick = () => openZoom(d);
   $('#exTopic').textContent = c.topic ? topicName(c.topic) : '';
   updateBadBtn();
   $('#ex').hidden = false; $('#exPanel').scrollTop = 0;
   haptic(1); SFX.tick();
 }
-const closeExplain = () => { $('#ex').hidden = true; exCard = null; };
+const closeExplain = () => { $('#ex').hidden = true; exCard = null; $('#zoom').hidden = true; };
+
+// Explanations may contain inline SVG diagrams. Strip anything that could run code before showing them.
+function safeHtml(html) {
+  const t = document.createElement('template');
+  t.innerHTML = html;
+  t.content.querySelectorAll('script, iframe, object, embed, foreignObject, style, link, meta').forEach((n) => n.remove());
+  for (const el of t.content.querySelectorAll('*')) {
+    for (const a of [...el.attributes]) {
+      if (/^on/i.test(a.name) || (/href$/i.test(a.name) && /^\s*javascript:/i.test(a.value))) el.removeAttribute(a.name);
+    }
+  }
+  return t.innerHTML;
+}
+// tap a diagram to see it bigger (scrolls if wider than the screen); tap again to close
+function openZoom(svg) {
+  const z = $('#zoom'), c = svg.cloneNode(true);
+  c.onclick = null;
+  z.querySelector('.inner').replaceChildren(c);
+  z.hidden = false; haptic(1);
+  z.scrollLeft = (z.scrollWidth - z.clientWidth) / 2;
+}
+$('#zoom').onclick = () => { $('#zoom').hidden = true; };
 $('#ex .scrim').onclick = closeExplain;
 $('#exClose').onclick = closeExplain;
 
@@ -881,7 +913,11 @@ function canUndo() {
   const h = history[history.length - 1];
   return !!h && (cfg.demo || !!practice || queue.some((a) => a.uid === h.uid));
 }
-function updateUndo() { $('#undo').classList.toggle('on', canUndo()); }
+function updateUndo() {
+  const u = $('#undo'), on = canUndo();
+  if (u.classList.contains('on') !== on) { u.classList.toggle('on', on); setTimeout(fitHeader, 260); }  // after its width animates
+}
+addEventListener('resize', () => fitHeader());
 setInterval(updateUndo, 1000);
 setInterval(() => { if (!cur && view().length && $('#sheet').hidden) render(true); }, 30000);
 
