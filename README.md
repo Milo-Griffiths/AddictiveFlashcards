@@ -19,7 +19,7 @@ Open the app once in the morning while the Mac is on, and it downloads the whole
 ## How sync works
 
 1. When it opens, the app asks AnkiConnect for today's due and new cards (within Anki's own daily limits), with images inlined. It caches them on the phone.
-2. Each swipe is queued and sent with `answerCards`, which runs Anki's real scheduler, about a second later. If Anki can't be reached, answers wait in the queue and go up the next time it can.
+2. Each swipe is queued and sent with `answerCards`, which runs Anki's real scheduler, about 12 seconds later (so you can still undo it). If Anki can't be reached, answers wait in the queue and go up the next time it can.
 3. After pushing answers, the app can also ask Anki desktop to sync with AnkiWeb, so AnkiMobile and AnkiDroid pick up the changes too.
 
 The dot in the top left shows the state: green means synced, amber means answers are waiting, and grey means offline. Tap the dot to force a sync.
