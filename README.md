@@ -123,7 +123,9 @@ The dot in the top left shows the state: **green** synced, **amber** answers wai
 ## Topics and practice mode
 
 - **Topics** come from note tags of the form `Topic::Name` (e.g. `Topic::Biology`). Tap the layers icon (top right) to review one topic at a time. Notes without a topic tag still appear under *All topics*.
-- **Practice:** layers icon → **Practice**. Pick one or more topics and how many cards (20, 50, 100 or all), optionally including cards you haven't studied yet. You get a shuffled set, whether or not they're due. **Nothing from practice is sent to Anki**, and today's review stats aren't touched. Again brings a card back a few cards later, Hard a little later. Your review session is parked and comes back exactly as it was when you tap *End practice*. Practised cards are kept on the device, so you can practise them offline later.
+- **Practice:** layers icon → **Practice**. Choose **Random** or **Hardest**, pick topics (or none for all), and how many cards (20, 50, 100 or all). **Nothing from practice is sent to Anki**, and today's review stats aren't touched. Again brings a card back a few cards later, Hard a little later. Your review session is parked and comes back exactly as it was when you tap *End practice*. Practised cards are kept on the device, so you can practise them offline later.
+  - **Random:** a shuffled set, whether or not the cards are due. You can include cards you haven't studied yet.
+  - **Hardest:** the cards you've been missing, worst first. Each studied card is scored from its last 12 answers in Anki's review log. Recent answers count most (each older one counts ×0.75), Hard counts as 0.6 of an Again, answers while first learning a card count half, and a card needs several misses to rank high. Cards with no recent misses are left out, and each card shows why it was picked (e.g. "missed 5 of last 6"). The ranking is saved, so this also works offline using the cards already on the device. Since practice isn't sent to Anki, practising a card doesn't lower its score. Answering it well in a real review does.
 
 ## Explanations (optional)
 

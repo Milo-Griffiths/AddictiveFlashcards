@@ -118,12 +118,17 @@
       <div id="topicList"></div>
     </div>
     <div id="practicePick">
-      <p class="muted">Go through cards from any topics, due or not. Your answers stay on this phone and are never sent to Anki.</p>
+      <p class="muted">Extra practice that doesn't count: your answers stay on this phone and are never sent to Anki.</p>
+      <div id="pMode" class="seg two" role="group" aria-label="Which cards">
+        <button type="button" data-mode="random">Random</button><button type="button" data-mode="hard">Hardest</button>
+      </div>
+      <p id="pModeNote" class="muted"></p>
       <div id="pTopics"></div>
+      <p class="muted hintline">Pick topics, or none for all of them.</p>
       <div id="pSize" class="seg" role="group" aria-label="How many cards">
         <button type="button" data-n="20">20</button><button type="button" data-n="50">50</button><button type="button" data-n="100">100</button><button type="button" data-n="0">All</button>
       </div>
-      <label class="tog"><input id="pNew" type="checkbox"> Include cards you haven't studied yet</label>
+      <label class="tog" id="pNewRow"><input id="pNew" type="checkbox"> Include cards you haven't studied yet</label>
       <button id="pStart" class="primary" type="button">Start practice</button>
       <p id="pMsg" class="muted"></p>
     </div>

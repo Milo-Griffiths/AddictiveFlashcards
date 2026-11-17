@@ -287,6 +287,9 @@ body:has(#flash.again) #stage { animation: shake .35s; }
 #topics .tog { display: flex; align-items: center; gap: 10px; font-size: 15px; color: var(--text); }
 #topics .tog input { width: 20px; height: 20px; accent-color: #c49cff; }
 #pStart:disabled { opacity: .5; }
+#pMode button { font-weight: 600; }
+#pModeNote { font-size: 13px; margin-top: -4px !important; }
+#practicePick .hintline { font-size: 12px; margin-top: -6px; }
 .pill.practice { color: #c49cff; }
 .pill.practice i { background: #c49cff; box-shadow: 0 0 8px #c49cff; animation: none; }
 body.practice .card:not(.next) { border-color: rgba(196,156,255,.45); }

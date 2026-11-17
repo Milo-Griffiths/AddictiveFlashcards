@@ -40,7 +40,7 @@ const IDB = (() => {
 
 const cfg = Object.assign(
   { url: '', key: '', deck: '', newLimit: 20, revLimit: 300, ankiweb: true, sound: true, haptics: true, demo: false, topic: '',
-    autoEx: 'hard', pTopics: [], pSize: 50, pNew: false },
+    autoEx: 'hard', pTopics: [], pSize: 50, pNew: false, pMode: 'random' },
   LS.get('cfg', {})
 );
 if (cfg.v !== 2) { cfg.sound = true; cfg.haptics = true; cfg.v = 2; }
@@ -309,7 +309,7 @@ function makeCard(c, isNext) {
   el.querySelector('.a').innerHTML = c.a;
   formatCode(el.querySelector('.body'), langOf(c), true);
   el.querySelector('.tag').textContent = (c.topic ? topicName(c.topic) : (c.deck || '').split('::').pop())
-    + (practice ? ' · practice' : c.isNew ? ' · new' : c.learn ? ' · learning' : '');
+    + (practice ? (c.why ? ` · ${c.why}` : ' · practice') : c.isNew ? ' · new' : c.learn ? ' · learning' : '');
   const b = el.querySelector('.exb');
   b.addEventListener('pointerdown', (e) => e.stopPropagation());
   b.addEventListener('click', (e) => { e.stopPropagation(); openExplain(c); });
@@ -529,7 +529,7 @@ function openTopics() {
   $('#practiceNow').hidden = !practice;
   if (practice) {
     const s = practice.stats;
-    $('#pNowStats').textContent = `${practice.topics.map(topicName).join(', ')} · ${view().length} left`
+    $('#pNowStats').textContent = `${practice.mode === 'hard' ? 'Hardest cards' : 'Random'} · ${practice.topics.length ? practice.topics.map(topicName).join(', ') : 'all topics'} · ${view().length} left`
       + (s.reviewed ? ` · ${Math.round((s.correct / s.reviewed) * 100)}% recalled` : '') + '. Nothing here is sent to Anki.';
     $('#topics').hidden = false;
     return;
@@ -562,7 +562,27 @@ $('#topics .scrim').onclick = () => { $('#topics').hidden = true; };
 /* ---------- practice mode ---------- */
 // Go through cards from chosen topics, due or not. Answers stay on the phone: nothing is queued for Anki.
 const shuffle = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [a[i], a[j]] = [a[j], a[i]]; } return a; };
-const practiceQuery = (topics) => (cfg.deck ? `deck:${q(cfg.deck)} ` : '') + '(' + topics.map((t) => 'tag:' + q('Topic::' + t)).join(' OR ') + ') -is:suspended' + (cfg.pNew ? '' : ' -is:new');
+// no topics picked = every topic. "Hardest" needs answer history, so it never includes unstudied cards.
+const hardMode = () => cfg.pMode === 'hard';
+const withNew = () => cfg.pNew && !hardMode();
+const practiceQuery = (topics) => (cfg.deck ? `deck:${q(cfg.deck)} ` : '')
+  + (topics.length ? '(' + topics.map((t) => 'tag:' + q('Topic::' + t)).join(' OR ') + ') ' : '')
+  + '-is:suspended' + (withNew() ? '' : ' -is:new');
+
+// How badly you've been doing on a card, 0..1, from Anki's review log. Recent answers count most
+// (each older one ×0.75), Hard counts as 0.6 of an Again, answers while first learning a card count
+// half, and the +1 in the denominator stops one unlucky answer from ranking a card at the top.
+function hardness(log) {
+  const rs = [...log].sort((a, b) => b.id - a.id).slice(0, 12);
+  let num = 0, den = 0, bad = 0;
+  rs.forEach((r, k) => {
+    const w = Math.pow(0.75, k) * (r.type === 0 ? 0.5 : 1);
+    const b = r.ease === 1 ? 1 : r.ease === 2 ? 0.6 : 0;
+    num += w * b; den += w;
+    if (k < 6 && b) bad++;
+  });
+  return { score: num / (den + 1), why: rs.length ? `missed ${bad} of last ${Math.min(6, rs.length)}` : '' };
+}
 
 function openPracticePick() {
   const known = LS.get('ptopics', null);
@@ -570,8 +590,24 @@ function openPracticePick() {
   drawPracticeTopics(known || [...new Set([...Object.keys(TOPICS).filter((t) => local.includes(t)), ...local])], LS.get('pcounts', {}));
   for (const b of $('#pSize').children) b.classList.toggle('on', +b.dataset.n === cfg.pSize);
   $('#pNew').checked = cfg.pNew; $('#pMsg').textContent = '';
+  drawMode();
   refreshPracticeCounts();
 }
+// Random / Hardest switch, and a start button that says exactly what you'll get
+function drawMode() {
+  for (const b of $('#pMode').children) b.classList.toggle('on', b.dataset.mode === cfg.pMode);
+  $('#pNewRow').hidden = hardMode();
+  $('#pModeNote').textContent = hardMode()
+    ? "The cards you've pressed Hard or Again on most, judged from your recent answers in Anki. Worst first."
+    : 'A shuffled mix, whether or not the cards are due.';
+  updateStartLabel();
+}
+function updateStartLabel() {
+  const picked = cfg.pTopics.filter((t) => drawnTopics.includes(t));
+  const n = cfg.pSize ? String(cfg.pSize) : 'all';
+  $('#pStart').textContent = `Start · ${n} ${hardMode() ? 'hardest' : 'random'} from ${picked.length ? picked.map(topicName).join(', ') : 'all topics'}`;
+}
+for (const b of $('#pMode').children) b.onclick = () => { cfg.pMode = b.dataset.mode; saveCfg(); drawMode(); refreshPracticeCounts(); haptic(1); };
 let drawnTopics = [];
 function drawPracticeTopics(list, counts) {
   const box = $('#pTopics'); box.innerHTML = '';
@@ -583,11 +619,12 @@ function drawPracticeTopics(list, counts) {
     b.firstChild.textContent = topicName(t); b.lastChild.textContent = counts[t] ?? '';
     b.onclick = () => {
       cfg.pTopics = cfg.pTopics.includes(t) ? cfg.pTopics.filter((x) => x !== t) : [...cfg.pTopics, t];
-      saveCfg(); b.classList.toggle('on'); haptic(1);
+      saveCfg(); b.classList.toggle('on'); updateStartLabel(); haptic(1);
     };
     box.appendChild(b);
   }
   if (!box.children.length) box.innerHTML = '<p class="muted">Topics appear once your cards have Topic:: tags.</p>';
+  updateStartLabel();
 }
 // real per-topic card counts from Anki when it's reachable (cached for offline)
 async function refreshPracticeCounts() {
@@ -605,18 +642,27 @@ async function refreshPracticeCounts() {
 for (const b of $('#pSize').children) b.onclick = () => {
   cfg.pSize = +b.dataset.n; saveCfg();
   for (const x of $('#pSize').children) x.classList.toggle('on', x === b);
-  haptic(1);
+  updateStartLabel(); haptic(1);
 };
 $('#pNew').onchange = (e) => { cfg.pNew = e.target.checked; saveCfg(); refreshPracticeCounts(); };
 
 async function loadPracticeCards(topics) {
   const want = cfg.pSize || Infinity;
   const pool = (await IDB.get('pcache')) || {};
+  const scores = LS.get('hardScores', {});       // last ranking, so "Hardest" also works offline
   if (!cfg.demo && cfg.url) {
     try {
-      const ids = shuffle(await anki('findCards', { query: practiceQuery(topics) }, 10000)).slice(0, want);
+      let ids = await anki('findCards', { query: practiceQuery(topics) }, 10000);
+      if (hardMode()) {
+        // rank by the review log (cheap), then download only the cards we'll show
+        const logs = await anki('getReviewsOfCards', { cards: ids.map(String) }, 30000);
+        for (const id of ids) { const h = hardness(logs[id] || []); if (h.score > 0.05) scores[id] = [h.score, h.why]; else delete scores[id]; }
+        LS.set('hardScores', scores);
+        ids = ids.filter((id) => scores[id]).sort((a, b) => scores[b][0] - scores[a][0]).slice(0, want);
+      } else ids = shuffle(ids).slice(0, want);
       const ex = exAll || (await IDB.get('ex')) || await loadExplanations();
-      const cards = await buildCards(await cardsInfo(ids), ex);
+      let cards = await buildCards(await cardsInfo(ids), ex);
+      if (hardMode()) cards = cards.sort((a, b) => scores[b.id][0] - scores[a.id][0]).map((c) => ({ ...c, why: scores[c.id][1] }));
       // keep them for offline practice next time (bounded, newest first)
       for (const c of cards) pool[c.id] = c;
       const keys = Object.keys(pool); if (keys.length > 1500) for (const k of keys.slice(0, keys.length - 1500)) delete pool[k];
@@ -628,23 +674,31 @@ async function loadPracticeCards(topics) {
   // offline: whatever we already have on the phone for these topics
   const have = new Map();
   for (const c of [...Object.values(pool), ...(practice ? practice.saved.deck : deck)]) {
-    if (topics.includes(c.topic) && (cfg.pNew || !c.isNew)) have.set(c.id, c);
+    if ((!topics.length || topics.includes(c.topic)) && (withNew() || !c.isNew) && (!hardMode() || scores[c.id])) have.set(c.id, c);
   }
   if (have.size) toast('Offline · practising cards saved on this phone');
-  return shuffle([...have.values()]).slice(0, want);
+  if (!hardMode()) return shuffle([...have.values()]).slice(0, want);
+  return [...have.values()].sort((a, b) => scores[b.id][0] - scores[a.id][0]).slice(0, want).map((c) => ({ ...c, why: scores[c.id][1] }));
 }
 
 async function startPractice(topics) {
-  if (!topics.length) { $('#pMsg').textContent = 'Pick at least one topic.'; return; }
-  $('#pMsg').textContent = 'Loading cards…'; $('#pStart').disabled = true;
+  $('#pMsg').textContent = hardMode() ? 'Finding your hardest cards…' : 'Loading cards…'; $('#pStart').disabled = true;
   let cards;
   try {
-    cards = cfg.demo ? shuffle(deck.filter((c) => topics.includes(c.topic))).slice(0, cfg.pSize || Infinity) : await loadPracticeCards(topics);
+    if (cfg.demo) {
+      cards = shuffle(deck.filter((c) => !topics.length || topics.includes(c.topic))).slice(0, cfg.pSize || Infinity);
+      if (hardMode()) toast('The demo has no answer history, so these are random');
+    } else cards = await loadPracticeCards(topics);
   } finally { $('#pStart').disabled = false; }
-  if (!cards.length) { $('#pMsg').textContent = "No cards for those topics on this phone yet. Connect to Anki once to download them."; return; }
+  if (!cards.length) {
+    $('#pMsg').textContent = hardMode()
+      ? "No cards you've been missing" + (topics.length ? ' in those topics' : '') + (online ? '. Nice!' : ' saved on this phone. Connect to Anki to rank them.')
+      : 'No cards for those topics on this phone yet. Connect to Anki once to download them.';
+    return;
+  }
   cards = cards.map((c) => ({ ...c, next: null, notBefore: 0, learn: false }));
   if (!practice) practice = { saved: { deck, doneCount, total, combo, history, cur } };
-  Object.assign(practice, { topics, size: cards.length, stats: { reviewed: 0, correct: 0, best: 0 }, cheered: false });
+  Object.assign(practice, { topics, mode: cfg.pMode, size: cards.length, stats: { reviewed: 0, correct: 0, best: 0 }, cheered: false });
   deck = cards; doneCount = 0; total = cards.length; combo = 0; history = []; cur = null;
   document.body.classList.add('practice');
   $('#topics').hidden = true;
