@@ -276,8 +276,8 @@ function answer(ease, dir, px, py) {
   else doneCount++;
 
   stats.reviewed++; if (ease > 1) stats.correct++;
-  const broke = ease === 1 && combo >= 3 ? combo : 0;
-  combo = ease > 1 ? combo + 1 : 0;
+  const broke = ease <= 2 && combo >= 3 ? combo : 0;   // Again and Hard both end the streak
+  combo = ease > 2 ? combo + 1 : 0;
   stats.best = Math.max(stats.best, combo);
   LS.set('stats', stats); LS.set('hinted', true); $('#hint').hidden = true;
   history.push(h); if (history.length > 30) history.shift();
@@ -291,6 +291,7 @@ function answer(ease, dir, px, py) {
     if (broke) comboBreak(broke);
   } else {
     reward(ease, x, y);
+    if (broke) comboBreak(broke);
   }
   showCombo();
 
@@ -519,7 +520,8 @@ function haptic(n = 1) {
 const SFX = (() => {
   let ac, out;
   const PENTA = [0, 2, 4, 7, 9];
-  const note = (i) => 523.25 * Math.pow(2, (PENTA[i % 5] + 12 * Math.floor(i / 5)) / 12); // C5 pentatonic, climbing
+  // C4 pentatonic climbing gently with the streak, capped so it never gets shrill (max ~E5)
+  const note = (i) => { i = Math.min(i, 7); return 261.63 * Math.pow(2, (PENTA[i % 5] + 12 * Math.floor(i / 5)) / 12); };
   function ctx() {
     if (!cfg.sound) return null;
     if (!ac) {
@@ -544,13 +546,13 @@ const SFX = (() => {
   }
   return {
     unlock() { ctx(); },
-    tick() { tone(1800, { dur: 0.03, vol: 0.08 }); },
-    reveal() { tone(880, { dur: 0.09, vol: 0.12, to: 1320 }); },
+    tick() { tone(900, { dur: 0.03, vol: 0.06 }); },
+    reveal() { tone(440, { dur: 0.09, vol: 0.12, to: 587 }); },
     good(ease, c) {
-      const i = Math.min(c, 14), f = note(i);
+      const i = Math.floor(Math.min(c, 21) / 3), f = note(i);  // steps up every 3 in a row
       if (ease === 2) { tone(f / 2, { dur: 0.22, type: 'triangle', vol: 0.25 }); return; }
       tone(f, { dur: 0.25, type: 'triangle', vol: 0.3 });
-      tone(f * 2, { dur: 0.18, vol: 0.08, t: 0.01 });
+      tone(f * 1.5, { dur: 0.18, vol: 0.05, t: 0.01 });
       if (ease === 4) tone(note(i + 2), { dur: 0.25, type: 'triangle', vol: 0.25, t: 0.07 });
     },
     again() {
@@ -559,8 +561,8 @@ const SFX = (() => {
     },
     milestone(tier) {
       const base = tier >= 1 ? [0, 2, 4, 5, 7] : [2, 4];
-      base.forEach((k, j) => tone(note(k + 5), { t: j * 0.07, dur: 0.4, type: 'triangle', vol: 0.22 }));
-      if (tier >= 1) for (let j = 0; j < 6; j++) tone(note(10 + j), { t: 0.35 + j * 0.035, dur: 0.25, vol: 0.06 });
+      base.forEach((k, j) => tone(note(k + 2), { t: j * 0.07, dur: 0.45, type: 'triangle', vol: 0.22 }));
+      if (tier >= 1) [0, 4, 7].forEach((k) => tone(261.63 * Math.pow(2, k / 12), { t: 0.35, dur: 0.8, type: 'triangle', vol: 0.12 })); // warm C major chord
     },
     undo() { tone(700, { dur: 0.16, vol: 0.12, to: 350 }); },
   };
