@@ -1,12 +1,16 @@
 'use strict';
 /* Flow Cards — swipe-through Anki reviews over AnkiConnect.
-   Offline-first: cards are cached in IndexedDB, answers are queued and
-   pushed with `answerCards` whenever AnkiConnect is reachable. */
+   Offline-first: the morning's cards are cached in IndexedDB, answers are queued
+   locally and pushed with `answerCards` whenever AnkiConnect is reachable.
+   The newest answers are held back for UNDO_MS so they can still be undone. */
 
 const $ = (s) => document.querySelector(s);
 const EASE = { left: 1, down: 2, up: 3, right: 4 };          // Again, Hard, Good, Easy
 const LABEL = { 1: 'Again', 2: 'Hard', 3: 'Good', 4: 'Easy' };
 const COLOR = { 1: '#ff5c7a', 2: '#ffa64d', 3: '#57e39b', 4: '#5cc8ff' };
+const GOLD = ['#ffd75e', '#ffc94d', '#ffb43b', '#fff1b8', '#ffe08a'];
+const UNDO_MS = 12000;
+const MOBILE = /iPhone|iPad|Android/.test(navigator.userAgent);
 
 /* ---------- storage ---------- */
 const LS = {
@@ -35,20 +39,24 @@ const IDB = (() => {
 })();
 
 const cfg = Object.assign(
-  { url: '', key: '', deck: '', newLimit: 20, revLimit: 300, ankiweb: true, sound: false, demo: false },
+  { url: '', key: '', deck: '', newLimit: 20, revLimit: 300, ankiweb: true, sound: true, haptics: true, demo: false },
   LS.get('cfg', {})
 );
+if (cfg.v !== 2) { cfg.sound = true; cfg.haptics = true; cfg.v = 2; }
 const saveCfg = () => LS.set('cfg', cfg);
+saveCfg();
 
 /* ---------- state ---------- */
-let deck = [];        // remaining cards for this session
-let queue = [];       // answers waiting to be pushed: {cardId, ease, t}
+let deck = [];        // remaining cards (cards answered "again" are re-inserted)
+let queue = [];       // answers waiting to be pushed: {uid, cardId, ease, t}
+let history = [];     // undo stack
 let cur = null, curEl = null, nextEl = null;
 let total = 0, doneCount = 0, combo = 0;
-let online = false, syncing = false, lastFetch = 0;
-const today = () => new Date().toISOString().slice(0, 10);
+let online = false, syncing = false, lastFetch = 0, retryAt = 0;
+const today = () => new Date().toLocaleDateString('en-CA');
 let stats = LS.get('stats', {});
 if (stats.day !== today()) stats = { day: today(), reviewed: 0, best: 0, correct: 0 };
+const persist = () => { IDB.set('queue', queue); IDB.set('deck', deck); IDB.set('meta', { doneCount, total, combo }); };
 
 /* ---------- AnkiConnect ---------- */
 async function anki(action, params = {}, timeout = 8000) {
@@ -108,6 +116,7 @@ async function inlineMedia(cards) {
 
 async function fetchDeck() {
   const decks = await anki('deckNames');
+  LS.set('decks', decks);
   const roots = cfg.deck ? [cfg.deck] : decks.filter((d) => !d.includes('::'));
   let revCap = cfg.revLimit, newCap = cfg.newLimit;
   try { // respect Anki's own daily limits when available
@@ -116,15 +125,16 @@ async function fetchDeck() {
     newCap = Math.min(newCap, st.reduce((s, d) => s + d.new_count, 0));
   } catch {}
   const scope = cfg.deck ? `deck:${q(cfg.deck)}` : '';
-  const [due, fresh] = await Promise.all([
-    revCap > 0 ? anki('findCards', { query: `${scope} is:due -is:suspended -is:buried` }) : [],
+  const [due, learn, fresh] = await Promise.all([
+    anki('findCards', { query: `${scope} is:due -is:suspended -is:buried` }),
+    anki('findCards', { query: `${scope} is:learn -is:due -is:suspended -is:buried` }), // learning cards due later today
     newCap > 0 ? anki('findCards', { query: `${scope} is:new -is:suspended -is:buried` }) : [],
   ]);
-  const ids = [...due.slice(0, revCap), ...fresh.slice(0, newCap)];
+  const ids = [...new Set([...due.slice(0, Math.max(revCap, 0)), ...learn, ...fresh.slice(0, newCap)])];
   const info = [];
   for (let i = 0; i < ids.length; i += 100) info.push(...await anki('cardsInfo', { cards: ids.slice(i, i + 100) }, 20000));
   const cards = info.map((c) => ({
-    id: c.cardId, deck: c.deckName, isNew: c.type === 0,
+    id: c.cardId, deck: c.deckName, isNew: c.type === 0, learn: c.type === 1 || c.type === 3,
     q: clean(c.question), a: splitAnswer(c.question, c.answer),
     next: (c.nextReviews || []).map((s) => s.replace(/[⁨⁩]/g, '')),
   }));
@@ -138,62 +148,67 @@ async function fetchDeck() {
   return out;
 }
 
-async function flush() {
-  if (!queue.length || cfg.demo) return true;
-  const batch = queue.slice();
+async function flush(all) {
+  if (!queue.length || cfg.demo) return;
+  const cutoff = all ? Infinity : Date.now() - UNDO_MS;
+  const batch = queue.filter((a) => a.t <= cutoff);
+  if (!batch.length) return;
   await anki('answerCards', { answers: batch.map(({ cardId, ease }) => ({ cardId, ease })) }, 20000);
-  queue = queue.slice(batch.length);
-  await IDB.set('queue', queue);
-  if (cfg.ankiweb) anki('sync', {}, 60000).catch(() => {});
-  return true;
+  const sent = new Set(batch.map((a) => a.uid));
+  queue = queue.filter((a) => !sent.has(a.uid));
+  IDB.set('queue', queue);
+  if (cfg.ankiweb && !queue.length) anki('sync', {}, 60000).catch(() => {});
+  updateUndo();
 }
 
 let flushTimer = 0;
 function scheduleFlush() {
   clearTimeout(flushTimer);
-  flushTimer = setTimeout(() => sync(false), 1200);
+  if (!queue.length || cfg.demo) return;
+  const oldest = Math.min(...queue.map((a) => a.t));
+  const wait = Math.max(500, oldest + UNDO_MS - Date.now() + 200, retryAt - Date.now());
+  flushTimer = setTimeout(async () => { await sync(false); scheduleFlush(); }, wait);
 }
 
-async function sync(refetch = true) {
-  if (cfg.demo) { setStatus(); return; }
-  if (syncing || !cfg.url) { setStatus(); return; }
+async function sync(refetch = true, all = false) {
+  if (cfg.demo || syncing || !cfg.url) { setStatus(); return; }
   syncing = true; setStatus();
   try {
-    await flush();
-    online = true;
+    await flush(all);
+    online = true; retryAt = 0;
     if (refetch) {
       const fresh = await fetchDeck();
       lastFetch = Date.now();
+      const pending = new Set(queue.map((a) => a.cardId));
       const keep = cur && fresh.find((c) => c.id === cur.id);
-      const answered = new Set(queue.map((a) => a.cardId));
-      deck = fresh.filter((c) => (!cur || c.id !== cur.id) && !answered.has(c.id));
+      deck = fresh.filter((c) => (!cur || c.id !== cur.id) && !pending.has(c.id));
       if (cur && keep) deck.unshift(cur);
-      total = doneCount + deck.length;
-      await IDB.set('deck', deck);
-      render(true);
+      if (stats.day !== today()) stats = { day: today(), reviewed: 0, best: 0, correct: 0 };
+      doneCount = Math.min(doneCount, stats.reviewed); total = doneCount + deck.length;
+      history = []; persist(); render(true);
     }
   } catch (e) {
-    online = false;
+    online = false; retryAt = Date.now() + 30000;
     console.warn('sync failed', e);
-  } finally { syncing = false; setStatus(); }
+  } finally { syncing = false; setStatus(); updateUndo(); }
 }
 
 function setStatus() {
   const el = $('#status'), t = el.querySelector('span');
   el.className = 'pill ' + (syncing ? 'busy' : queue.length ? 'pending' : online || cfg.demo ? 'ok' : '');
-  t.textContent = cfg.demo ? 'demo' : syncing ? 'syncing' : queue.length ? `${queue.length} to sync` : online ? `${deck.length} left` : (cfg.url ? 'offline' : 'set up');
+  t.textContent = cfg.demo ? 'demo' : syncing ? 'syncing' : queue.length ? `${queue.length} to sync` : online ? `${deck.length} left` : (cfg.url ? `offline · ${deck.length} left` : 'set up');
 }
 
 /* ---------- rendering ---------- */
 function makeCard(c, isNext) {
   const el = document.createElement('article');
   el.className = 'card' + (isNext ? ' next' : '');
-  el.innerHTML = `<div class="tint"></div><div class="lbl"></div>
+  el.innerHTML = `<div class="lbl"></div>
     <div class="body"><div class="q"></div><div class="a"></div></div>
-    <div class="foot"><span class="tag"></span><span class="iv"></span></div>`;
+    <div class="foot"><span class="tag"></span><span class="iv"></span></div><div class="tint"></div>`;
   el.querySelector('.q').innerHTML = c.q;
   el.querySelector('.a').innerHTML = c.a;
-  el.querySelector('.tag').textContent = (c.deck || '').split('::').pop() + (c.isNew ? ' · new' : '');
+  el.querySelector('.tag').textContent = (c.deck || '').split('::').pop() + (c.isNew ? ' · new' : c.learn ? ' · learning' : '');
   return el;
 }
 
@@ -211,7 +226,8 @@ function render(force) {
   stage.innerHTML = '';
   curEl = nextEl = null;
   $('#done').hidden = !!cur;
-  if (!cur) { combo = 0; showCombo(); showDone(); updateBar(); setStatus(); return; }
+  heat();
+  if (!cur) { showCombo(); showDone(); updateBar(); setStatus(); return; }
   if (deck[1]) { nextEl = makeCard(deck[1], true); stage.appendChild(nextEl); }
   curEl = makeCard(cur, false); stage.appendChild(curEl);
   fit(curEl);
@@ -221,14 +237,14 @@ function render(force) {
 
 function updateBar() {
   const pct = total ? (doneCount / total) * 100 : 0;
-  $('#bar b').style.width = pct + '%';
+  $('#bar b').style.width = Math.min(100, pct) + '%';
 }
 
 function showDone() {
   $('#doneStats').textContent = stats.reviewed
     ? `${stats.reviewed} reviewed today · ${Math.round((stats.correct / stats.reviewed) * 100)}% recalled · best combo ×${stats.best}`
     : (cfg.url || cfg.demo ? 'Nothing due right now.' : 'Connect to AnkiConnect in settings to start.');
-  if (stats.reviewed) celebrate();
+  if (stats.reviewed && !showDone.shown) { showDone.shown = true; celebrate(1); }
 }
 
 /* ---------- reveal & answer ---------- */
@@ -240,38 +256,46 @@ function reveal() {
   if (cur.next && cur.next.length === 4) curEl.querySelector('.iv').textContent = `good · ${cur.next[2]}`;
   const r = curEl.getBoundingClientRect();
   FX.ring(r.left + r.width / 2, r.top + r.height / 2, 26, 'rgba(255,255,255,.9)');
-  haptic(); tone(520, 0.04);
+  haptic(1); SFX.reveal();
 }
 
+let uidSeq = Date.now();
 function answer(ease, dir, px, py) {
   if (!cur || !curEl) return;
   const card = cur, el = curEl;
-  if (!cfg.demo) queue.push({ cardId: card.id, ease, t: Date.now() });
+  const h = { uid: ++uidSeq, card: { ...card }, ease, dir, combo, doneCount, stats: { ...stats }, reinserted: null };
+  if (!cfg.demo) queue.push({ uid: h.uid, cardId: card.id, ease, t: Date.now() });
   deck.shift();
-  if (ease === 1) deck.splice(Math.min(deck.length, 4), 0, card); // see it again soon
+
+  // Mimic Anki's same-day learning steps so the whole day works offline.
+  const learning = card.isNew || card.learn;
+  let again = null;
+  if (ease === 1) again = { ...card, learn: true, seen: 0, next: null, isNew: false };
+  else if (learning && ease < 4 && (card.seen || 0) < 1) again = { ...card, seen: (card.seen || 0) + 1, next: null };
+  if (again) { deck.splice(Math.min(deck.length, ease === 1 ? 4 : 8), 0, again); h.reinserted = again; }
   else doneCount++;
-  IDB.set('queue', queue); IDB.set('deck', deck);
 
   stats.reviewed++; if (ease > 1) stats.correct++;
+  const broke = ease === 1 && combo >= 3 ? combo : 0;
   combo = ease > 1 ? combo + 1 : 0;
   stats.best = Math.max(stats.best, combo);
   LS.set('stats', stats); LS.set('hinted', true); $('#hint').hidden = true;
+  history.push(h); if (history.length > 30) history.shift();
+  persist();
 
   // feedback
   const W = innerWidth, H = innerHeight;
   const x = px ?? W / 2, y = py ?? H / 2;
-  if (ease === 1) { FX.fizzle(x, y); haptic(); tone(180, 0.08, 'triangle'); }
-  else {
-    const n = 26 + Math.min(combo, 40) * 3;
-    FX.burst(x, y, n, COLOR[ease], 1 + Math.min(combo, 30) / 20);
-    haptic(); if (combo >= 5) setTimeout(haptic, 70);
-    tone(440 * Math.pow(2, Math.min(combo, 24) / 12), 0.06);
-    if (combo && combo % 10 === 0) { celebrate(); setTimeout(haptic, 140); }
+  if (ease === 1) {
+    FX.shatter(x, y); flash('again'); haptic(2); SFX.again();
+    if (broke) comboBreak(broke);
+  } else {
+    reward(ease, x, y);
   }
   showCombo();
 
   // fly out
-  const off = { left: [-W * 1.3, 0, -20], right: [W * 1.3, 0, 20], up: [0, -H * 1.1, 0], down: [0, H * 1.1, 0] }[dir] || [0, -H, 0];
+  const off = OFF(dir);
   el.style.transition = 'transform .28s cubic-bezier(.4,0,.6,1), opacity .28s';
   el.style.transform = `translate(${off[0]}px, ${off[1]}px) rotate(${off[2]}deg)`;
   el.style.opacity = '0';
@@ -279,31 +303,120 @@ function answer(ease, dir, px, py) {
   cur = null; curEl = null;
   setTimeout(() => { el.remove(); render(true); }, 200);
 
-  if (!cfg.demo) scheduleFlush();
-  setStatus();
+  scheduleFlush(); setStatus(); updateUndo();
+}
+const OFF = (dir) => ({ left: [-innerWidth * 1.3, 0, -20], right: [innerWidth * 1.3, 0, 20], up: [0, -innerHeight * 1.1, 0], down: [0, innerHeight * 1.1, 0] }[dir] || [0, -innerHeight, 0]);
+
+/* Rewards escalate with the combo. Milestones: 5, 10, 15, 20, 25, ... */
+function reward(ease, x, y) {
+  const c = combo, W = innerWidth, H = innerHeight;
+  const power = 1 + Math.min(c, 40) / 18;
+  const n = 24 + Math.min(c, 40) * 4;
+  FX.burst(x, y, n, COLOR[ease], power, c >= 3 ? 0.25 + Math.min(c, 20) / 40 : 0);
+  if (c >= 3) FX.wave(x, y, '#ffd75e', 60 + c * 4, 0.35);
+  SFX.good(ease, c);
+  haptic(c >= 5 ? 2 : 1);
+
+  if (c && c % 10 === 0) {                // big gold explosion
+    const tier = c / 10;
+    setTimeout(() => {
+      FX.explode(W / 2, H * 0.45, Math.min(tier, 4));
+      flash('gold');
+      celebrate(tier);
+      milestone(`${c} in a row`);
+      SFX.milestone(tier); haptic(3);
+    }, 120);
+  } else if (c >= 5 && c % 5 === 0) {     // medium gold pop
+    setTimeout(() => {
+      FX.burst(W / 2, H * 0.45, 90, '#ffc94d', 1.8, 1);
+      FX.wave(W / 2, H * 0.45, '#ffd75e', 220, 0.8);
+      milestone(`×${c}`, true); SFX.milestone(0.5); haptic(2);
+    }, 100);
+  }
 }
 
 function showCombo() {
   const el = $('#combo');
   el.textContent = combo >= 2 ? `×${combo}` : '';
   el.classList.toggle('on', combo >= 2);
-  el.style.color = combo >= 25 ? '#ff7ad9' : combo >= 10 ? '#ff8a4d' : '';
+  el.style.color = combo >= 25 ? '#ff7ad9' : combo >= 10 ? '#ffd75e' : '';
   el.classList.remove('pop'); void el.offsetWidth; if (combo >= 2) el.classList.add('pop');
+  heat();
+}
+function heat() { // the card border warms up as a streak builds
+  document.body.classList.toggle('warm', combo >= 5 && combo < 10);
+  document.body.classList.toggle('hot', combo >= 10 && combo < 25);
+  document.body.classList.toggle('blaze', combo >= 25);
+}
+function comboBreak(n) {
+  const el = $('#broke');
+  el.textContent = `×${n}`;
+  el.classList.remove('go'); void el.offsetWidth; el.classList.add('go');
+}
+function milestone(text, small) {
+  const el = $('#mile');
+  el.textContent = text; el.classList.toggle('small', !!small);
+  el.classList.remove('go'); void el.offsetWidth; el.classList.add('go');
+}
+function flash(kind) {
+  const el = $('#flash');
+  el.className = ''; void el.offsetWidth; el.className = kind;
+  clearTimeout(flash.t); flash.t = setTimeout(() => { el.className = ''; }, 950);
+}
+let toastT = 0;
+function toast(text) {
+  const el = $('#toast'); el.textContent = text; el.classList.add('on');
+  clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove('on'), 2200);
+}
+function celebrate(tier = 1) {
+  const W = innerWidth, n = 4 + Math.round(tier * 3);
+  for (let i = 0; i < n; i++) setTimeout(() => FX.confetti(W * (0.1 + Math.random() * 0.8), -10, 30 + tier * 10), i * 80);
 }
 
-function celebrate() {
-  const W = innerWidth;
-  for (let i = 0; i < 5; i++) setTimeout(() => FX.confetti(W * (0.15 + Math.random() * 0.7), -10, 40), i * 90);
+/* ---------- undo ---------- */
+function canUndo() {
+  const h = history[history.length - 1];
+  return !!h && (cfg.demo || queue.some((a) => a.uid === h.uid));
 }
+function updateUndo() { $('#undo').classList.toggle('on', canUndo()); }
+setInterval(updateUndo, 1000);
+
+function undo() {
+  const h = history[history.length - 1];
+  if (!h) return;
+  if (!canUndo()) { toast('Already synced to Anki'); history = []; updateUndo(); return; }
+  history.pop();
+  queue = queue.filter((a) => a.uid !== h.uid);
+  if (h.reinserted) { const i = deck.indexOf(h.reinserted); if (i >= 0) deck.splice(i, 1); }
+  deck.unshift(h.card);
+  combo = h.combo; doneCount = h.doneCount; stats = h.stats;
+  LS.set('stats', stats); persist();
+  render(true);
+  // fly back in from where it left, already flipped
+  if (curEl) {
+    curEl.classList.add('revealed'); fit(curEl);
+    if (cur.next && cur.next.length === 4) curEl.querySelector('.iv').textContent = `good · ${cur.next[2]}`;
+    const off = OFF(h.dir);
+    curEl.style.transition = 'none';
+    curEl.style.transform = `translate(${off[0]}px, ${off[1]}px) rotate(${off[2]}deg)`;
+    void curEl.offsetWidth;
+    curEl.style.transition = 'transform .38s cubic-bezier(.2,1.2,.4,1)';
+    curEl.style.transform = '';
+  }
+  showCombo(); setStatus(); updateUndo(); scheduleFlush();
+  SFX.undo(); haptic(1);
+}
+$('#undo').onclick = undo;
 
 /* ---------- gestures ---------- */
 let drag = null;
 const stage = $('#stage');
 
 stage.addEventListener('pointerdown', (e) => {
+  SFX.unlock();
   if (!curEl || !$('#sheet').hidden) return;
   const body = curEl.querySelector('.body');
-  drag = { x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, t0: performance.now(), mode: null,
+  drag = { x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, t0: performance.now(), mode: null, armed: false,
     body, samples: [[e.clientX, e.clientY, performance.now()]] };
   curEl.style.transition = 'none';
   stage.setPointerCapture(e.pointerId);
@@ -333,17 +446,20 @@ stage.addEventListener('pointermove', (e) => {
   const tint = curEl.querySelector('.tint'), lbl = curEl.querySelector('.lbl');
   if (revealed && dir) {
     const ease = EASE[dir];
-    tint.style.background = COLOR[ease]; tint.style.opacity = amt * 0.18;
+    tint.style.background = COLOR[ease]; tint.style.opacity = amt * 0.2;
     lbl.style.color = COLOR[ease]; lbl.style.opacity = amt;
     const iv = cur.next && cur.next[ease - 1];
     lbl.textContent = LABEL[ease] + (iv ? ` · ${iv}` : '');
     if (amt > 0.6 && Math.random() < 0.5) FX.spark(e.clientX, e.clientY, COLOR[ease]);
+    const armed = Math.hypot(dx, dy) > 90;
+    if (armed && !drag.armed) { haptic(1); SFX.tick(); }
+    drag.armed = armed;
   } else if (!revealed && dy < 0) {
     lbl.textContent = 'reveal'; lbl.style.color = '#fff'; lbl.style.opacity = amt * 0.7; tint.style.opacity = 0;
   } else { tint.style.opacity = 0; lbl.style.opacity = 0; }
 });
 
-const endDrag = (e) => {
+const endDrag = () => {
   if (!drag || !curEl) { drag = null; return; }
   const d = drag; drag = null;
   const dx = d.x - d.x0, dy = d.y - d.y0, dist = Math.hypot(dx, dy);
@@ -375,9 +491,11 @@ function dirOf(dx, dy) {
   return Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 'left' : 'right') : (dy < 0 ? 'up' : 'down');
 }
 
-// keyboard (desktop testing): space flips, arrows grade
+// keyboard (desktop testing): space flips, arrows grade, z / backspace undoes
 addEventListener('keydown', (e) => {
-  if (!$('#sheet').hidden || !curEl) return;
+  if (!$('#sheet').hidden) return;
+  if (e.key === 'z' || e.key === 'Backspace') { e.preventDefault(); return undo(); }
+  if (!curEl) return;
   const map = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' };
   if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); reveal(); }
   else if (map[e.key]) {
@@ -387,137 +505,229 @@ addEventListener('keydown', (e) => {
   }
 });
 
-/* ---------- haptics & sound ---------- */
+/* ---------- haptics ---------- */
+// iOS Safari has no vibration API, but toggling an <input type=checkbox switch>
+// (iOS 18+) fires the system haptic. Android uses navigator.vibrate.
 const hapEl = $('#hap');
-function haptic() {
-  if (navigator.vibrate) { navigator.vibrate(10); return; }
-  try { hapEl.click(); } catch {} // iOS 18+: toggling a <input switch> produces a system haptic
+function haptic(n = 1) {
+  if (!cfg.haptics) return;
+  if (navigator.vibrate) { navigator.vibrate(n === 1 ? 12 : n === 2 ? [14, 50, 14] : [18, 45, 18, 45, 30]); return; }
+  for (let i = 0; i < n; i++) setTimeout(() => { try { hapEl.click(); } catch {} }, i * 70);
 }
-let actx;
-function tone(freq, dur, type = 'sine') {
-  if (!cfg.sound) return;
-  try {
-    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
-    const o = actx.createOscillator(), g = actx.createGain(), t = actx.currentTime;
-    o.type = type; o.frequency.setValueAtTime(freq, t); o.frequency.exponentialRampToValueAtTime(freq * 1.5, t + dur);
-    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.12, t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.12);
-    o.connect(g).connect(actx.destination); o.start(t); o.stop(t + dur + 0.15);
-  } catch {}
-}
+
+/* ---------- sound ---------- */
+const SFX = (() => {
+  let ac, out;
+  const PENTA = [0, 2, 4, 7, 9];
+  const note = (i) => 523.25 * Math.pow(2, (PENTA[i % 5] + 12 * Math.floor(i / 5)) / 12); // C5 pentatonic, climbing
+  function ctx() {
+    if (!cfg.sound) return null;
+    if (!ac) {
+      try {
+        ac = new (window.AudioContext || window.webkitAudioContext)();
+        const comp = ac.createDynamicsCompressor(); out = ac.createGain(); out.gain.value = 0.5;
+        out.connect(comp).connect(ac.destination);
+      } catch { return null; }
+    }
+    if (ac.state === 'suspended') ac.resume();
+    return ac;
+  }
+  function tone(f, { t = 0, dur = 0.18, type = 'sine', vol = 0.3, to = null, attack = 0.005, filter = null } = {}) {
+    const a = ctx(); if (!a) return;
+    const s = a.currentTime + t, o = a.createOscillator(), g = a.createGain();
+    o.type = type; o.frequency.setValueAtTime(f, s);
+    if (to) o.frequency.exponentialRampToValueAtTime(to, s + dur);
+    g.gain.setValueAtTime(0.0001, s); g.gain.exponentialRampToValueAtTime(vol, s + attack); g.gain.exponentialRampToValueAtTime(0.0001, s + dur);
+    let node = o;
+    if (filter) { const fl = a.createBiquadFilter(); fl.type = 'lowpass'; fl.frequency.value = filter; node.connect(fl); node = fl; }
+    node.connect(g).connect(out); o.start(s); o.stop(s + dur + 0.05);
+  }
+  return {
+    unlock() { ctx(); },
+    tick() { tone(1800, { dur: 0.03, vol: 0.08 }); },
+    reveal() { tone(880, { dur: 0.09, vol: 0.12, to: 1320 }); },
+    good(ease, c) {
+      const i = Math.min(c, 14), f = note(i);
+      if (ease === 2) { tone(f / 2, { dur: 0.22, type: 'triangle', vol: 0.25 }); return; }
+      tone(f, { dur: 0.25, type: 'triangle', vol: 0.3 });
+      tone(f * 2, { dur: 0.18, vol: 0.08, t: 0.01 });
+      if (ease === 4) tone(note(i + 2), { dur: 0.25, type: 'triangle', vol: 0.25, t: 0.07 });
+    },
+    again() {
+      tone(220, { dur: 0.35, type: 'sawtooth', vol: 0.22, to: 70, filter: 900 });
+      tone(110, { dur: 0.3, vol: 0.35, to: 45 });
+    },
+    milestone(tier) {
+      const base = tier >= 1 ? [0, 2, 4, 5, 7] : [2, 4];
+      base.forEach((k, j) => tone(note(k + 5), { t: j * 0.07, dur: 0.4, type: 'triangle', vol: 0.22 }));
+      if (tier >= 1) for (let j = 0; j < 6; j++) tone(note(10 + j), { t: 0.35 + j * 0.035, dur: 0.25, vol: 0.06 });
+    },
+    undo() { tone(700, { dur: 0.16, vol: 0.12, to: 350 }); },
+  };
+})();
 
 /* ---------- particles ---------- */
 const FX = (() => {
   const cv = $('#fx'), cx = cv.getContext('2d');
-  let W, H, dpr, P = [], raf = 0;
+  let W, H, dpr, P = [], waves = [], raf = 0;
   const size = () => { dpr = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; cv.width = W * dpr; cv.height = H * dpr; cx.setTransform(dpr, 0, 0, dpr, 0, 0); };
   size(); addEventListener('resize', size);
   const PAL = ['#ffc94d', '#ff8a4d', '#ff5c7a', '#ff7ad9', '#5cc8ff', '#57e39b', '#ffffff'];
-  const add = (p) => { if (P.length < 900) P.push(p); if (!raf) raf = requestAnimationFrame(tick); };
+  const pick = (a) => a[(Math.random() * a.length) | 0];
+  const kick = () => { if (!raf) raf = requestAnimationFrame(tick); };
+  const add = (p) => { if (P.length < 1400) P.push(Object.assign({ rot: 0, vr: 0, glow: true, kind: 'dot', drag: 0.94, g: 0.18 }, p)); kick(); };
   function tick() {
     cx.clearRect(0, 0, W, H);
-    cx.globalCompositeOperation = 'lighter';
+    for (let i = waves.length - 1; i >= 0; i--) {
+      const w = waves[i]; w.t += 1 / 60;
+      const k = w.t / w.dur; if (k >= 1) { waves.splice(i, 1); continue; }
+      const e = 1 - Math.pow(1 - k, 3);
+      cx.globalCompositeOperation = 'lighter';
+      cx.globalAlpha = (1 - k) * 0.8; cx.strokeStyle = w.c; cx.lineWidth = 2 + (1 - k) * 8;
+      cx.beginPath(); cx.arc(w.x, w.y, w.r * e, 0, 6.283); cx.stroke();
+    }
     for (let i = P.length - 1; i >= 0; i--) {
       const p = P[i];
       p.life -= p.decay;
       if (p.life <= 0 || p.y > H + 40) { P.splice(i, 1); continue; }
       p.vx *= p.drag; p.vy = p.vy * p.drag + p.g; p.x += p.vx; p.y += p.vy; p.rot += p.vr;
+      cx.globalCompositeOperation = p.glow ? 'lighter' : 'source-over';
       cx.globalAlpha = Math.min(1, p.life * 1.4);
       cx.fillStyle = p.c;
-      if (p.kind === 'rect') {
-        cx.save(); cx.translate(p.x, p.y); cx.rotate(p.rot); cx.fillRect(-p.s, -p.s * 0.45, p.s * 2, p.s * 0.9); cx.restore();
+      if (p.kind === 'rect' || p.kind === 'shard') {
+        cx.save(); cx.translate(p.x, p.y); cx.rotate(p.rot);
+        if (p.kind === 'shard') { cx.beginPath(); cx.moveTo(-p.s, -p.s * 0.6); cx.lineTo(p.s, -p.s * 0.2); cx.lineTo(-p.s * 0.2, p.s); cx.closePath(); cx.fill(); }
+        else cx.fillRect(-p.s, -p.s * 0.45, p.s * 2, p.s * 0.9);
+        cx.restore();
+      } else if (p.kind === 'star') {
+        const r = p.s * (0.5 + p.life * 0.5) * (0.7 + 0.3 * Math.sin(p.rot * 4));
+        cx.fillRect(p.x - r * 2, p.y - 0.6, r * 4, 1.2); cx.fillRect(p.x - 0.6, p.y - r * 2, 1.2, r * 4);
+        cx.beginPath(); cx.arc(p.x, p.y, r * 0.6, 0, 6.283); cx.fill();
       } else {
         cx.beginPath(); cx.arc(p.x, p.y, p.s * (0.4 + p.life * 0.6), 0, 6.283); cx.fill();
       }
     }
-    cx.globalAlpha = 1;
-    raf = P.length ? requestAnimationFrame(tick) : 0;
+    cx.globalAlpha = 1; cx.globalCompositeOperation = 'source-over';
+    raf = P.length || waves.length ? requestAnimationFrame(tick) : 0;
     if (!raf) cx.clearRect(0, 0, W, H);
   }
   return {
-    burst(x, y, n, color, power = 1) {
+    // celebratory burst; `gold` (0..1) mixes in gold glitter as the streak grows
+    burst(x, y, n, color, power = 1, gold = 0) {
       for (let i = 0; i < n; i++) {
         const a = Math.random() * 6.283, sp = (2 + Math.random() * 7) * power;
-        add({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 2, g: 0.18, drag: 0.94, s: 1.5 + Math.random() * 3,
-          life: 1, decay: 0.014 + Math.random() * 0.02, c: Math.random() < 0.3 ? '#fff' : (power > 1.6 && Math.random() < 0.4 ? PAL[i % PAL.length] : color), kind: 'dot', rot: 0, vr: 0 });
+        const g = Math.random() < gold;
+        add({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 2, s: g ? 2 + Math.random() * 2 : 1.5 + Math.random() * 3,
+          life: 1, decay: 0.012 + Math.random() * 0.02, c: g ? pick(GOLD) : Math.random() < 0.25 ? '#fff' : color,
+          kind: g && Math.random() < 0.4 ? 'star' : 'dot', vr: 0.2 });
       }
     },
     ring(x, y, n, color) {
       for (let i = 0; i < n; i++) {
         const a = (i / n) * 6.283, sp = 5 + Math.random();
-        add({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, g: 0, drag: 0.9, s: 1.6, life: 1, decay: 0.035, c: color, kind: 'dot', rot: 0, vr: 0 });
+        add({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, g: 0, drag: 0.9, s: 1.6, life: 1, decay: 0.035, c: color });
       }
     },
+    wave(x, y, c, r, dur) { waves.push({ x, y, c, r, dur, t: 0 }); kick(); },
     spark(x, y, color) {
-      add({ x, y, vx: (Math.random() - 0.5) * 3, vy: (Math.random() - 0.5) * 3, g: 0.05, drag: 0.95, s: 1.5 + Math.random() * 2, life: 0.8, decay: 0.03, c: color, kind: 'dot', rot: 0, vr: 0 });
+      add({ x, y, vx: (Math.random() - 0.5) * 3, vy: (Math.random() - 0.5) * 3, g: 0.05, drag: 0.95, s: 1.5 + Math.random() * 2, life: 0.8, decay: 0.03, c: color });
     },
-    fizzle(x, y) {
-      for (let i = 0; i < 18; i++) add({ x: x + (Math.random() - 0.5) * 60, y, vx: (Math.random() - 0.5) * 1.5, vy: Math.random() * 2, g: 0.12, drag: 0.97,
-        s: 1.5 + Math.random() * 2, life: 0.9, decay: 0.02, c: '#6d6d7a', kind: 'dot', rot: 0, vr: 0 });
+    // "again": dull red/grey shards that crack off and drop heavily — no glow
+    shatter(x, y) {
+      const cols = ['#7a2a38', '#5a2430', '#4a4a55', '#3a3a44', '#ff5c7a'];
+      for (let i = 0; i < 34; i++) {
+        const a = Math.PI + (Math.random() - 0.5) * 2.4; // mostly sideways/down, not a radial firework
+        const sp = 1 + Math.random() * 3.5;
+        add({ x: x + (Math.random() - 0.5) * 40, y: y + (Math.random() - 0.5) * 40,
+          vx: Math.cos(a) * sp * (Math.random() < 0.5 ? -1 : 1), vy: -Math.random() * 1.5,
+          g: 0.42, drag: 0.985, s: 3 + Math.random() * 5, life: 1, decay: 0.012, c: cols[i % cols.length],
+          kind: 'shard', rot: Math.random() * 6, vr: (Math.random() - 0.5) * 0.25, glow: false });
+      }
+      for (let i = 0; i < 14; i++) add({ x: x + (Math.random() - 0.5) * 80, y, vx: (Math.random() - 0.5) * 0.6, vy: 0.5 + Math.random(),
+        g: 0.03, drag: 0.98, s: 6 + Math.random() * 8, life: 0.6, decay: 0.012, c: 'rgba(60,60,70,.35)', glow: false }); // smoke
+    },
+    // 10-in-a-row: big gold explosion with shockwaves
+    explode(x, y, tier = 1) {
+      const n = 160 + tier * 70, sp0 = 6 + tier * 1.5;
+      for (let i = 0; i < n; i++) {
+        const a = Math.random() * 6.283, sp = Math.random() * sp0 + 2;
+        add({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, g: 0.08, drag: 0.955, s: 1.5 + Math.random() * 3.5,
+          life: 1, decay: 0.006 + Math.random() * 0.012, c: tier >= 2 && Math.random() < 0.3 ? pick(PAL) : pick(GOLD),
+          kind: Math.random() < 0.3 ? 'star' : 'dot', vr: 0.3 });
+      }
+      for (let k = 0; k < 2 + tier; k++) setTimeout(() => this.wave(x, y, k % 2 ? '#fff1b8' : '#ffc94d', Math.max(W, H) * (0.5 + k * 0.15), 0.9), k * 110);
+      setTimeout(() => { // glittering embers drifting down
+        for (let i = 0; i < 60 * tier; i++) add({ x: Math.random() * W, y: -10 - Math.random() * 200, vx: (Math.random() - 0.5), vy: 1 + Math.random() * 2,
+          g: 0.02, drag: 0.99, s: 1 + Math.random() * 2, life: 1, decay: 0.004, c: pick(GOLD), kind: 'star', vr: 0.2 });
+      }, 250);
     },
     confetti(x, y, n) {
       for (let i = 0; i < n; i++) add({ x, y, vx: (Math.random() - 0.5) * 10, vy: Math.random() * 6 + 2, g: 0.12, drag: 0.985, s: 3 + Math.random() * 3,
-        life: 1, decay: 0.006 + Math.random() * 0.006, c: PAL[(Math.random() * PAL.length) | 0], kind: 'rect', rot: Math.random() * 6, vr: (Math.random() - 0.5) * 0.3 });
+        life: 1, decay: 0.006 + Math.random() * 0.006, c: pick(PAL), kind: 'rect', rot: Math.random() * 6, vr: (Math.random() - 0.5) * 0.3 });
     },
   };
 })();
 
 /* ---------- settings ---------- */
+function fillDecks(names) {
+  const sel = $('#sDeck');
+  const list = [...new Set([...(names || []), ...(cfg.deck ? [cfg.deck] : [])])].sort();
+  sel.innerHTML = '<option value="">All decks</option>' + list.map(() => '<option></option>').join('');
+  list.forEach((n, i) => { sel.options[i + 1].value = n; sel.options[i + 1].textContent = n.replace(/::/g, ' › '); });
+  sel.value = cfg.deck;
+}
 function openSheet(msg, cls) {
-  $('#sUrl').value = cfg.url || (/iPhone|iPad|Android/.test(navigator.userAgent) ? '' : 'http://localhost:8765');
+  $('#sUrl').value = cfg.url || (MOBILE ? '' : 'http://localhost:8765');
   $('#sKey').value = cfg.key; $('#sNew').value = cfg.newLimit; $('#sRev').value = cfg.revLimit;
-  $('#sWeb').checked = cfg.ankiweb; $('#sSound').checked = cfg.sound;
+  $('#sWeb').checked = cfg.ankiweb; $('#sSound').checked = cfg.sound; $('#sHap').checked = cfg.haptics;
   const m = $('#sMsg'); m.textContent = msg || ''; m.className = cls || '';
+  fillDecks(LS.get('decks', []));
   $('#sheet').hidden = false;
-  loadDecks();
+  if (cfg.url && !cfg.demo) anki('deckNames', {}, 4000).then((d) => { LS.set('decks', d); fillDecks(d); }).catch(() => {});
 }
-async function loadDecks() {
-  if (!cfg.url || cfg.demo) return;
-  try {
-    const names = (await anki('deckNames', {}, 4000)).sort();
-    const sel = $('#sDeck');
-    sel.innerHTML = '<option value="">All decks</option>' + names.map((n) => `<option></option>`).join('');
-    names.forEach((n, i) => { sel.options[i + 1].value = n; sel.options[i + 1].textContent = n.replace(/::/g, ' › '); });
-    sel.value = cfg.deck;
-  } catch {}
-}
+function closeSheet() { $('#sheet').hidden = true; }
 $('#gear').onclick = () => openSheet();
-$('#status').onclick = () => sync(true);
-$('#sheet .scrim').onclick = () => { $('#sheet').hidden = true; };
+$('#status').onclick = () => sync(true, true);
+$('#sheet .scrim').onclick = closeSheet;
+$('#sClose').onclick = closeSheet;
+// instant-apply toggles, no connection needed
+$('#sSound').onchange = (e) => { cfg.sound = e.target.checked; saveCfg(); if (cfg.sound) SFX.good(3, 2); };
+$('#sHap').onchange = (e) => { cfg.haptics = e.target.checked; saveCfg(); haptic(1); };
+$('#sWeb').onchange = (e) => { cfg.ankiweb = e.target.checked; saveCfg(); };
+
 $('#sSave').onclick = async () => {
   const url = $('#sUrl').value.trim();
+  const deckChanged = cfg.deck !== $('#sDeck').value || cfg.newLimit !== Math.max(0, +$('#sNew').value || 0);
   Object.assign(cfg, {
     url, key: $('#sKey').value.trim(), deck: $('#sDeck').value,
     newLimit: Math.max(0, +$('#sNew').value || 0), revLimit: Math.max(1, +$('#sRev').value || 300),
-    ankiweb: $('#sWeb').checked, sound: $('#sSound').checked,
   });
-  const m = $('#sMsg'); m.className = ''; m.textContent = 'Connecting…';
   const wasDemo = cfg.demo;
+  cfg.demo = false; saveCfg();       // settings are always saved, even offline
+  const m = $('#sMsg'); m.className = ''; m.textContent = 'Connecting…';
   try {
-    cfg.demo = false;
     const v = await anki('version', {}, 5000);
-    saveCfg();
     m.className = 'ok'; m.textContent = `Connected (AnkiConnect v${v}). Loading cards…`;
-    if (wasDemo) { deck = []; queue = []; cur = null; doneCount = 0; await IDB.set('queue', []); }
-    await loadDecks();
-    await sync(true);
-    $('#sheet').hidden = true;
+    if (wasDemo) { deck = []; queue = []; history = []; cur = null; doneCount = 0; IDB.set('queue', []); }
+    await sync(true, true);
+    closeSheet();
   } catch (e) {
-    cfg.demo = wasDemo; saveCfg();
+    if (wasDemo) { cfg.demo = true; saveCfg(); }
     m.className = 'err';
-    m.textContent = location.protocol === 'https:' && url.startsWith('http:') && !/localhost|127\.0\.0\.1/.test(url)
+    m.textContent = 'Saved. ' + (location.protocol === 'https:' && url.startsWith('http:') && !/localhost|127\.0\.0\.1/.test(url)
       ? 'iOS blocks plain http from an https page. Use an https URL (e.g. Tailscale Serve).'
-      : /localhost|127\.0\.0\.1/.test(url) && /iPhone|iPad|Android/.test(navigator.userAgent)
+      : /localhost|127\.0\.0\.1/.test(url) && MOBILE
       ? 'localhost means this phone, not your Mac. Use your Tailscale https://….ts.net address.'
-      : `Couldn't reach AnkiConnect: ${e.message || e}. Is Anki open and is this origin in webCorsOriginList?`;
+      : `Can't reach Anki right now${deckChanged ? '' : ''} — you can keep reviewing cached cards; answers sync when it's back.`);
   }
 };
 $('#sDemo').onclick = () => {
   cfg.demo = true; saveCfg();
   deck = DEMO.map((c, i) => ({ ...c, id: i + 1, deck: 'Demo', isNew: false, next: ['1m', '2d', '4d', '9d'] }));
-  queue = []; cur = null; doneCount = 0; total = deck.length; online = false;
-  $('#sheet').hidden = true; render(true);
+  queue = []; history = []; cur = null; doneCount = 0; combo = 0; total = deck.length; online = false; showDone.shown = false;
+  closeSheet(); render(true); showCombo(); updateUndo();
 };
-$('#refresh').onclick = () => cfg.demo ? $('#sDemo').onclick() : sync(true);
+$('#refresh').onclick = () => cfg.demo ? $('#sDemo').onclick() : sync(true, true);
 
 const DEMO = [
   { q: 'Capital of Australia?', a: 'Canberra' },
@@ -532,26 +742,41 @@ const DEMO = [
   { q: 'Smallest prime number?', a: '2' },
   { q: 'Capital of Canada?', a: 'Ottawa' },
   { q: 'A stack is LIFO or FIFO?', a: 'LIFO — last in, first out' },
+  { q: 'Speed of light (approx.)?', a: '3 × 10⁸ m/s' },
+  { q: 'Who wrote "1984"?', a: 'George Orwell' },
+  { q: 'Binary for 10?', a: '1010' },
+  { q: 'Largest planet?', a: 'Jupiter' },
+  { q: 'Capital of Japan?', a: 'Tokyo' },
+  { q: 'What is a closure?', a: 'A function bundled with references to its surrounding scope' },
+  { q: 'Milgram studied…', a: 'Obedience to authority' },
+  { q: 'Chemical symbol for gold?', a: 'Au' },
 ];
 
 /* ---------- boot ---------- */
 (async function boot() {
   deck = (await IDB.get('deck')) || [];
   queue = (await IDB.get('queue')) || [];
-  total = deck.length;
-  render(true);
+  const meta = (await IDB.get('meta')) || {};
+  doneCount = meta.doneCount || 0; total = meta.total || deck.length; combo = meta.combo || 0;
+  if (stats.day !== (LS.get('stats', {}).day)) { doneCount = 0; total = deck.length; }
+  render(true); showCombo();
   if (cfg.demo) { if (!deck.length) $('#sDemo').onclick(); return setStatus(); }
   if (!cfg.url) {
-    // first run on desktop: try localhost silently
-    cfg.url = 'http://localhost:8765';
-    try { await anki('version', {}, 2500); saveCfg(); } catch { cfg.url = ''; return openSheet('Point this at your AnkiConnect, or try the demo.'); }
+    if (!MOBILE) { // first run on desktop: try localhost silently
+      cfg.url = 'http://localhost:8765';
+      try { await anki('version', {}, 2500); saveCfg(); return sync(true, true); } catch { cfg.url = ''; }
+    }
+    return openSheet('Point this at your AnkiConnect, or try the demo.');
   }
-  sync(true);
+  sync(true, true);
 })();
 
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && !cfg.demo) sync(Date.now() - lastFetch > 5 * 60e3 || !deck.length);
+  if (cfg.demo) return;
+  if (document.visibilityState === 'visible') sync(Date.now() - lastFetch > 5 * 60e3 || !deck.length);
+  else { persist(); if (queue.length) flush(true).catch(() => {}); }  // leaving the app: push everything
 });
 addEventListener('online', () => sync(!deck.length));
+setInterval(() => { if (queue.length && document.visibilityState === 'visible' && Date.now() > retryAt) sync(false); }, 60000);
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
