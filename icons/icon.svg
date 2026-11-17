@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Flow Cards app icon. Source for icon-*.png (render at 180, 192, 512). -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1b1b25"/>
+      <stop offset="1" stop-color="#08080b"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.58" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ffb43b" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="#ffb43b" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffe08a"/>
+      <stop offset="0.5" stop-color="#ffc94d"/>
+      <stop offset="1" stop-color="#ff8a4d"/>
+    </linearGradient>
+    <linearGradient id="bar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffc94d"/>
+      <stop offset="1" stop-color="#ff8a4d"/>
+    </linearGradient>
+    <linearGradient id="wave" gradientUnits="userSpaceOnUse" x1="214" y1="0" x2="350" y2="0">
+      <stop offset="0" stop-color="#ffd75e"/>
+      <stop offset="1" stop-color="#ff8a4d"/>
+    </linearGradient>
+    <linearGradient id="streak" gradientUnits="userSpaceOnUse" x1="56" y1="0" x2="168" y2="0">
+      <stop offset="0" stop-color="#ffc94d" stop-opacity="0"/>
+      <stop offset="1" stop-color="#ffc94d" stop-opacity="0.95"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <rect width="512" height="512" fill="url(#glow)"/>
+
+  <!-- card behind -->
+  <rect x="146" y="122" width="200" height="270" rx="34" transform="rotate(-11 246 257)"
+        fill="#17171f" stroke="#2e2e3b" stroke-width="5"/>
+
+  <!-- motion streaks: the front card is being swiped -->
+  <g stroke="url(#streak)" stroke-width="15" stroke-linecap="round">
+    <path d="M66 214 H150"/>
+    <path d="M92 258 H164"/>
+    <path d="M70 302 H146"/>
+  </g>
+
+  <!-- front card mid-swipe -->
+  <g transform="rotate(9 282 256)">
+    <rect x="182" y="118" width="200" height="276" rx="34" fill="#1f1f2a" stroke="url(#gold)" stroke-width="7"/>
+    <!-- the "flow" wave -->
+    <path d="M214 262 C236 214 262 214 282 256 C302 298 328 298 350 250" fill="none" stroke="url(#wave)" stroke-width="30" stroke-linecap="round"/>
+  </g>
+
+  <!-- crisp sparkles instead of blurry dots -->
+  <g fill="#ffd75e">
+    <path d="M418 84 C421 104 425 108 445 111 C425 114 421 118 418 138 C415 118 411 114 391 111 C411 108 415 104 418 84 Z"/>
+    <path d="M118 372 C120 385 123 388 136 390 C123 392 120 395 118 408 C116 395 113 392 100 390 C113 388 116 385 118 372 Z" opacity="0.85"/>
+  </g>
+  <circle cx="432" cy="380" r="6" fill="#ffc94d" opacity="0.7"/>
+</svg>
