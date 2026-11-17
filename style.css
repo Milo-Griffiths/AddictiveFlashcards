@@ -224,7 +224,7 @@ body:has(#flash.again) #stage { animation: shake .35s; }
 #exBody table { border-collapse: collapse; margin: 8px 0; }
 #exBody td, #exBody th { border: 1px solid var(--line); padding: 4px 12px; text-align: center; }
 
-#topics h2 { margin-bottom: 14px; }
+#topics h2 { margin-bottom: 4px; }
 #topicList { display: grid; gap: 8px; }
 .chip {
   display: flex; justify-content: space-between; align-items: center; width: 100%;
@@ -234,3 +234,61 @@ body:has(#flash.again) #stage { animation: shake .35s; }
 .chip.on { border-color: var(--accent); background: rgba(255,201,77,.08); }
 .chip.on b { color: var(--accent); }
 .muted { color: var(--dim); font-size: 14px; }
+
+/* code: monospace blocks, inline code, and C / Haskell colouring */
+.card code, #exCard code { font-family: ui-monospace, Menlo, monospace; font-size: .86em; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 0 .3em; }
+.card pre.code, #exCard pre.code {
+  display: block; width: fit-content; max-width: 100%; margin: .3em auto; text-align: left;
+  font: .66em/1.5 ui-monospace, Menlo, monospace; background: var(--bg); border: 1px solid var(--line);
+  border-radius: 12px; padding: .7em .9em; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+#exBody pre code { border: 0; background: none; padding: 0; font: inherit; }
+.hl-k { color: #ff7ad9; }              /* keywords */
+.hl-t { color: #5cc8ff; }              /* types, constructors */
+.hl-f { color: #ffd75e; }              /* functions */
+.hl-s { color: #57e39b; }              /* strings, chars */
+.hl-n { color: #ffa64d; }              /* numbers */
+.hl-c { color: var(--dim); font-style: italic; }   /* comments */
+.hl-p { color: #c49cff; }              /* #include, #define */
+.hl-o { color: #ff9bb0; }              /* :: -> => <- = | \ */
+
+/* explanation sheet: recap of the card when it opens by itself, and the "bad explanation" flag */
+#exCard { margin: 6px 0 4px; padding: 12px 14px; border-radius: 14px; background: var(--bg); border: 1px solid var(--line); font-size: 15px; line-height: 1.45; }
+#exCard .rq { color: var(--dim); font-size: 14px; }
+#exCard .ra { margin-top: 8px; color: var(--text); }
+#exCard pre.code { font-size: 13px; }
+#exCard img { max-width: 100%; max-height: 24vh; border-radius: 10px; }
+#exBad {
+  display: grid; gap: 2px; width: 100%; margin-top: 18px; padding: 12px 16px; border-radius: 14px; text-align: left;
+  border: 1px dashed var(--line); color: var(--dim); font-size: 15px;
+}
+#exBad b { color: var(--text); font-weight: 600; }
+#exBad small { font-size: 12px; }
+#exBad.on { border: 1px solid rgba(255,92,122,.5); background: rgba(255,92,122,.08); }
+#exBad.on b { color: var(--again); }
+
+/* practice mode */
+#topics .panel { display: grid; gap: 16px; }
+#practicePick, #practiceNow { display: grid; gap: 12px; }
+#practiceNow h2 { margin: 0; }
+.seg.two { grid-template-columns: 1fr 1fr; }
+#tabs button { font-weight: 600; }
+#tabs button.on { border-color: var(--accent); color: var(--accent); background: rgba(255,201,77,.08); }
+#tabs button[data-tab=practice].on { border-color: #c49cff; color: #c49cff; background: rgba(196,156,255,.1); }
+#practicePick .muted, #practiceNow .muted { margin: 0; }
+#pTopics { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; }
+#pTopics .chip { padding: 12px 14px; font-size: 15px; }
+#pTopics .chip.on { border-color: #c49cff; background: rgba(196,156,255,.1); }
+#pTopics .chip.on b { color: #c49cff; }
+#pTopics .muted { grid-column: 1 / -1; }
+.seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.seg button { padding: 10px 0; border-radius: 12px; border: 1px solid var(--line); background: var(--bg); font-size: 15px; color: var(--dim); }
+.seg button.on { border-color: #c49cff; color: #c49cff; background: rgba(196,156,255,.1); }
+#topics .tog { display: flex; align-items: center; gap: 10px; font-size: 15px; color: var(--text); }
+#topics .tog input { width: 20px; height: 20px; accent-color: #c49cff; }
+#pStart:disabled { opacity: .5; }
+.pill.practice { color: #c49cff; }
+.pill.practice i { background: #c49cff; box-shadow: 0 0 8px #c49cff; animation: none; }
+body.practice .card:not(.next) { border-color: rgba(196,156,255,.45); }
+body.practice .card .foot .tag { color: #c49cff; }
+#done2 { margin-top: -4px; }

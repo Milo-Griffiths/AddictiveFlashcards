@@ -39,7 +39,8 @@ const IDB = (() => {
 })();
 
 const cfg = Object.assign(
-  { url: '', key: '', deck: '', newLimit: 20, revLimit: 300, ankiweb: true, sound: true, haptics: true, demo: false, topic: '' },
+  { url: '', key: '', deck: '', newLimit: 20, revLimit: 300, ankiweb: true, sound: true, haptics: true, demo: false, topic: '',
+    autoEx: 'hard', pTopics: [], pSize: 50, pNew: false },
   LS.get('cfg', {})
 );
 if (cfg.v !== 2) { cfg.sound = true; cfg.haptics = true; cfg.v = 2; }
@@ -49,6 +50,10 @@ saveCfg();
 /* ---------- state ---------- */
 let deck = [];        // remaining cards (cards answered "again" are re-inserted)
 let queue = [];       // answers waiting to be pushed: {uid, cardId, ease, t}
+let tagQueue = [];    // "bad explanation" flags waiting to be pushed: {note, on}
+let practice = null;  // practice session: {topics, stats, saved: review state while practising}
+let exAll = null;     // last downloaded explanations file {noteId: html}
+const BAD_TAG = 'FlowCards::BadExplanation';
 let history = [];     // undo stack
 let cur = null, curEl = null, nextEl = null;
 let total = 0, doneCount = 0, combo = 0;
@@ -58,7 +63,7 @@ let stats = LS.get('stats', {});
 if (stats.day !== today()) stats = { day: today(), reviewed: 0, best: 0, correct: 0 };
 const TOPICS = { Architecture: 'Architecture', Haskell: 'Haskell', C: 'C', SoftwareTools: 'Software Tools', Maths: 'Maths', Psychology: 'Psychology', Geography: 'Geography' };
 const topicName = (t) => TOPICS[t] || t;
-const inTopic = (c) => !cfg.topic || c.topic === cfg.topic;
+const inTopic = (c) => !!practice || !cfg.topic || c.topic === cfg.topic;
 const view = () => deck.filter(inTopic);
 // index in `deck` just before the (n+1)-th card of the current topic, for re-inserting "again" cards
 function posAfter(n) {
@@ -66,7 +71,12 @@ function posAfter(n) {
   for (let i = 0; i < deck.length; i++) if (inTopic(deck[i])) { if (seen === n) return i; seen++; }
   return deck.length;
 }
-const persist = () => { IDB.set('queue', queue); IDB.set('deck', deck); IDB.set('meta', { doneCount, total, combo }); };
+// While practising, the review session is parked in practice.saved; only that is ever saved as "the deck".
+const persist = () => {
+  const r = practice ? practice.saved : { deck, doneCount, total, combo };
+  IDB.set('queue', queue); IDB.set('tags', tagQueue);
+  IDB.set('deck', r.deck); IDB.set('meta', { doneCount: r.doneCount, total: r.total, combo: r.combo });
+};
 
 /* ---------- AnkiConnect ---------- */
 async function anki(action, params = {}, timeout = 8000) {
@@ -141,38 +151,26 @@ async function fetchDeck() {
     newCap > 0 ? anki('findCards', { query: `${scope} is:new -is:suspended -is:buried` }) : [],
   ]);
   const ids = [...new Set([...due.slice(0, Math.max(revCap, 0)), ...learn, ...fresh.slice(0, newCap)])];
-  const info = [];
-  for (let i = 0; i < ids.length; i += 100) info.push(...await anki('cardsInfo', { cards: ids.slice(i, i + 100) }, 20000));
-  // topic tags (Topic::X) live on notes
-  const noteIds = [...new Set(info.map((c) => c.note))], topicOf = {};
-  for (let i = 0; i < noteIds.length; i += 200) {
-    for (const n of await anki('notesInfo', { notes: noteIds.slice(i, i + 200) }, 20000)) {
-      const t = (n.tags || []).find((x) => x.startsWith('Topic::'));
-      if (t) topicOf[n.noteId] = t.slice(7);
-    }
-  }
-  const ex = await loadExplanations();
+  const info = await cardsInfo(ids);
+  exAll = await loadExplanations();
+  IDB.set('ex', exAll);
   // each deck's learning / relearning steps (minutes), so offline re-shows match Anki's timing
   const steps = {};
   for (const d of new Set(info.map((c) => c.deckName))) {
     try { const k = await anki('getDeckConfig', { deck: d }); steps[d] = [k.new.delays, k.lapse.delays]; } catch {}
   }
-  const cards = info.map((c) => {
+  const cards = await buildCards(info, exAll, (c) => {
     const [learnSteps, lapseSteps] = steps[c.deckName] || [[1, 10], [10]];
     const phase = c.type === 0 ? 'new' : c.type === 1 ? 'learn' : c.type === 3 ? 'relearn' : 'review';
     const list = phase === 'relearn' ? lapseSteps : learnSteps;
     const left = (c.left || 0) % 1000;
     return {
-    id: c.cardId, note: c.note, deck: c.deckName, isNew: c.type === 0, learn: c.type === 1 || c.type === 3,
-    phase, steps: learnSteps, lapse: lapseSteps,
-    step: phase === 'learn' || phase === 'relearn' ? Math.max(0, list.length - left) : 0,
-    // intraday learning cards (queue 1) carry an epoch-seconds due time
-    notBefore: c.queue === 1 && c.due > 1e9 ? Math.max(0, c.due * 1000) : 0,
-    topic: topicOf[c.note] || null, ex: ex[c.note] || null,
-    q: clean(c.question), a: splitAnswer(c.question, c.answer),
-    next: (c.nextReviews || []).map((s) => s.replace(/[⁨⁩]/g, '')),
-  }; });
-  await inlineMedia(cards);
+      phase, steps: learnSteps, lapse: lapseSteps,
+      step: phase === 'learn' || phase === 'relearn' ? Math.max(0, list.length - left) : 0,
+      // intraday learning cards (queue 1) carry an epoch-seconds due time
+      notBefore: c.queue === 1 && c.due > 1e9 ? Math.max(0, c.due * 1000) : 0,
+    };
+  });
   // reviews in due order, new cards woven in every ~4th slot
   const revs = cards.filter((c) => !c.isNew), news = cards.filter((c) => c.isNew), out = [];
   while (revs.length || news.length) {
@@ -180,6 +178,37 @@ async function fetchDeck() {
     if (news.length) out.push(news.shift());
   }
   return out;
+}
+
+async function cardsInfo(ids) {
+  const info = [];
+  for (let i = 0; i < ids.length; i += 100) info.push(...await anki('cardsInfo', { cards: ids.slice(i, i + 100) }, 20000));
+  return info;
+}
+
+// Turns AnkiConnect cardsInfo rows into our card objects (topic + flag from note tags, explanation, inlined images).
+async function buildCards(info, ex, extra = () => ({})) {
+  const noteIds = [...new Set(info.map((c) => c.note))], topicOf = {}, bad = new Set();
+  for (let i = 0; i < noteIds.length; i += 200) {
+    for (const n of await anki('notesInfo', { notes: noteIds.slice(i, i + 200) }, 20000)) {
+      const tags = n.tags || [];
+      const t = tags.find((x) => x.startsWith('Topic::'));
+      if (t) topicOf[n.noteId] = t.slice(7);
+      if (tags.some((x) => x.toLowerCase() === BAD_TAG.toLowerCase())) bad.add(n.noteId);
+    }
+  }
+  // flags still waiting to be sent win over what Anki says
+  for (const f of tagQueue) f.on ? bad.add(f.note) : bad.delete(f.note);
+  const cards = info.map((c) => ({
+    id: c.cardId, note: c.note, deck: c.deckName, isNew: c.type === 0, learn: c.type === 1 || c.type === 3,
+    phase: 'review', notBefore: 0,
+    topic: topicOf[c.note] || null, ex: (ex || {})[c.note] || null, bad: bad.has(c.note),
+    q: clean(c.question), a: splitAnswer(c.question, c.answer),
+    next: (c.nextReviews || []).map((s) => s.replace(/[⁨⁩]/g, '')),
+    ...extra(c),
+  }));
+  await inlineMedia(cards);
+  return cards;
 }
 
 // Explanations are stored in Anki's media folder as one JSON file ({noteId: html}),
@@ -206,6 +235,18 @@ async function flush(all) {
   updateUndo();
 }
 
+// "Bad explanation" flags become a note tag in Anki, so a later batch can find them with tag:FlowCards::BadExplanation.
+async function flushTags() {
+  if (!tagQueue.length || cfg.demo) return;
+  const batch = tagQueue.slice(), last = new Map();
+  for (const f of batch) if (f.note) last.set(f.note, f.on);   // only the final state per note matters
+  const on = [...last].filter(([, v]) => v).map(([n]) => n), off = [...last].filter(([, v]) => !v).map(([n]) => n);
+  if (on.length) await anki('addTags', { notes: on, tags: BAD_TAG });
+  if (off.length) await anki('removeTags', { notes: off, tags: BAD_TAG });
+  tagQueue = tagQueue.slice(batch.length);
+  IDB.set('tags', tagQueue);
+}
+
 let flushTimer = 0;
 function scheduleFlush() {
   clearTimeout(flushTimer);
@@ -220,17 +261,25 @@ async function sync(refetch = true, all = false) {
   syncing = true; setStatus();
   try {
     await flush(all);
+    await flushTags();
     online = true; retryAt = 0;
     if (refetch) {
       const fresh = await fetchDeck();
       lastFetch = Date.now();
       const pending = new Set(queue.map((a) => a.cardId));
-      const keep = cur && fresh.find((c) => c.id === cur.id);
-      deck = fresh.filter((c) => (!cur || c.id !== cur.id) && !pending.has(c.id));
-      if (cur && keep) deck.unshift(cur);
       if (stats.day !== today()) stats = { day: today(), reviewed: 0, best: 0, correct: 0 };
-      doneCount = Math.min(doneCount, stats.reviewed); total = doneCount + deck.length;
-      history = []; persist(); render(true);
+      if (practice) { // refresh the parked review session; leave the practice deck alone
+        const s = practice.saved;
+        s.deck = fresh.filter((c) => !pending.has(c.id)); s.cur = null; s.history = [];
+        s.doneCount = Math.min(s.doneCount, stats.reviewed); s.total = s.doneCount + s.deck.length;
+        persist();
+      } else {
+        const keep = cur && fresh.find((c) => c.id === cur.id);
+        deck = fresh.filter((c) => (!cur || c.id !== cur.id) && !pending.has(c.id));
+        if (cur && keep) deck.unshift(cur);
+        doneCount = Math.min(doneCount, stats.reviewed); total = doneCount + deck.length;
+        history = []; persist(); render(true);
+      }
     }
   } catch (e) {
     online = false; retryAt = Date.now() + 30000;
@@ -240,10 +289,11 @@ async function sync(refetch = true, all = false) {
 
 function setStatus() {
   const el = $('#status'), t = el.querySelector('span');
-  el.className = 'pill ' + (syncing ? 'busy' : queue.length ? 'pending' : online || cfg.demo ? 'ok' : '');
-  const left = view().length, pre = cfg.topic ? topicName(cfg.topic) + ' · ' : '';
+  const waiting = queue.length + tagQueue.length;
+  el.className = 'pill ' + (syncing ? 'busy' : waiting ? 'pending' : online || cfg.demo ? 'ok' : '') + (practice ? ' practice' : '');
+  const left = view().length, pre = practice ? 'Practice · ' : cfg.topic ? topicName(cfg.topic) + ' · ' : '';
   // the count of cards left always comes first; sync state is secondary (the dot colour shows it too)
-  const state = cfg.demo ? 'demo' : syncing ? 'syncing' : queue.length ? `${queue.length} to sync` : online ? '' : 'offline';
+  const state = cfg.demo ? 'demo' : syncing ? 'syncing' : waiting ? `${waiting} to sync` : online ? '' : 'offline';
   t.textContent = !cfg.url && !cfg.demo ? 'set up' : `${pre}${left} left` + (state ? ` · ${state}` : '');
 }
 
@@ -257,7 +307,9 @@ function makeCard(c, isNext) {
     <div class="foot"><span class="tag"></span><span class="iv"></span></div><div class="tint"></div>`;
   el.querySelector('.q').innerHTML = c.q;
   el.querySelector('.a').innerHTML = c.a;
-  el.querySelector('.tag').textContent = (c.topic ? topicName(c.topic) : (c.deck || '').split('::').pop()) + (c.isNew ? ' · new' : c.learn ? ' · learning' : '');
+  formatCode(el.querySelector('.body'), langOf(c), true);
+  el.querySelector('.tag').textContent = (c.topic ? topicName(c.topic) : (c.deck || '').split('::').pop())
+    + (practice ? ' · practice' : c.isNew ? ' · new' : c.learn ? ' · learning' : '');
   const b = el.querySelector('.exb');
   b.addEventListener('pointerdown', (e) => e.stopPropagation());
   b.addEventListener('click', (e) => { e.stopPropagation(); openExplain(c); });
@@ -297,6 +349,15 @@ function updateBar() {
 }
 
 function showDone() {
+  $('#done2').hidden = !practice;
+  $('#done .big').textContent = practice ? 'Practice complete' : 'All caught up';
+  if (practice) {
+    const s = practice.stats;
+    $('#refresh').textContent = 'Practice again';
+    $('#doneStats').textContent = `${practice.size} cards · ${s.reviewed ? Math.round((s.correct / s.reviewed) * 100) : 0}% recalled · best combo ×${s.best}`;
+    if (!practice.cheered) { practice.cheered = true; celebrate(1); }
+    return;
+  }
   const waiting = view().filter((c) => c.notBefore > Date.now());
   if (waiting.length) {
     const mins = Math.max(1, Math.ceil((Math.min(...waiting.map((c) => c.notBefore)) - Date.now() - 20 * 60e3) / 60e3));
@@ -326,24 +387,154 @@ function reveal() {
 
 function revealedUI(el, c) {
   fit(el);
-  if (c.next && c.next.length === 4) el.querySelector('.iv').textContent = `good · ${c.next[2]}`;
+  if (!practice && c.next && c.next.length === 4) el.querySelector('.iv').textContent = `good · ${c.next[2]}`;
   if (c.ex) el.querySelector('.exb').hidden = false;
 }
 
 /* ---------- explanation sheet ---------- */
-function openExplain(c) {
+let exCard = null;
+// `auto`: opened by itself after Hard/Again, when the card has already flown away, so recap it at the top
+function openExplain(c, auto) {
   if (!c || !c.ex) return;
+  exCard = c;
+  const lang = langOf(c), recap = $('#exCard');
+  recap.hidden = !auto;
+  if (auto) {
+    recap.innerHTML = '<div class="rq"></div><div class="ra"></div>';
+    recap.firstChild.innerHTML = c.q; recap.lastChild.innerHTML = c.a;
+    formatCode(recap, lang, true);
+  }
   $('#exBody').innerHTML = c.ex;
+  formatCode($('#exBody'), lang, false);
   $('#exTopic').textContent = c.topic ? topicName(c.topic) : '';
+  updateBadBtn();
   $('#ex').hidden = false; $('#exPanel').scrollTop = 0;
   haptic(1); SFX.tick();
 }
-const closeExplain = () => { $('#ex').hidden = true; };
+const closeExplain = () => { $('#ex').hidden = true; exCard = null; };
 $('#ex .scrim').onclick = closeExplain;
 $('#exClose').onclick = closeExplain;
 
+function updateBadBtn() {
+  const b = $('#exBad'), on = !!(exCard && exCard.bad);
+  b.classList.toggle('on', on);
+  b.innerHTML = on ? '<b>Flagged for a rewrite</b><small>Tap to unflag</small>' : '<b>Bad explanation?</b><small>Flag it to be rewritten</small>';
+}
+// Flags apply to the note, so every copy of it (review deck, parked deck, practice cache) is updated.
+$('#exBad').onclick = () => {
+  if (!exCard) return;
+  const on = !exCard.bad, note = exCard.note;
+  const mark = (list) => { for (const c of list || []) if (c.note === note) c.bad = on; };
+  mark(deck); if (practice) mark(practice.saved.deck); mark(history.map((h) => h.card)); exCard.bad = on;
+  IDB.get('pcache').then((pc) => { if (pc) { mark(Object.values(pc)); IDB.set('pcache', pc); } });
+  if (!cfg.demo && note) tagQueue.push({ note, on });
+  persist(); updateBadBtn(); setStatus();
+  toast(on ? 'Flagged · tagged in Anki on next sync' : 'Flag removed');
+  haptic(1); SFX.tick();
+  if (!cfg.demo) sync(false);
+};
+
+/* ---------- code formatting ---------- */
+// Cards keep code as <code>line<br>line</code>; explanations use <pre> and <code>.
+// Multi-line <code> becomes a left-aligned block, `backticks` in card text become inline code,
+// and C / Haskell get light syntax colouring (other topics just get the monospace look).
+const langOf = (c) => ({ C: 'c', Haskell: 'hs' }[c && c.topic] || null);
+const HL = (() => {
+  const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const words = (s) => new Set(s.split(' '));
+  const C_KW = words('auto break case continue default do else for goto if return sizeof switch while typedef struct union enum static extern register const volatile inline restrict _Bool _Static_assert NULL true false EOF');
+  const C_TY = words('int char short long float double void unsigned signed bool size_t ssize_t FILE ptrdiff_t intptr_t uintptr_t');
+  const HS_KW = words('module import qualified as hiding where let in case of if then else do data type newtype class instance deriving infixl infixr infix forall');
+  const OPCH = '-!#$%&*+./<=>?@\\\\^|~:';
+  const RE = {
+    c: new RegExp([
+      String.raw`(?<com>\/\/[^\n]*|\/\*[\s\S]*?(?:\*\/|$))`,
+      String.raw`(?<pre>^[ \t]*#[^\n]*)`,
+      String.raw`(?<str>"(?:[^"\\\n]|\\.)*"?|'(?:[^'\\\n]|\\.)*'?)`,
+      String.raw`(?<num>(?<![\w.])(?:0[xX][\da-fA-F]+|\d+\.?\d*(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)[uUlLfF]*)`,
+      String.raw`(?<id>[A-Za-z_]\w*)`,
+    ].join('|'), 'gm'),
+    hs: new RegExp([
+      String.raw`(?<com>(?<![${OPCH}])--+(?![${OPCH}])[^\n]*|\{-[\s\S]*?(?:-\}|$))`,
+      String.raw`(?<str>"(?:[^"\\\n]|\\.)*"?|(?<![\w'])'(?:[^'\\\n]|\\.)')`,
+      String.raw`(?<num>(?<![\w.'])\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)`,
+      String.raw`(?<id>[A-Za-z_][\w']*)`,
+      String.raw`(?<op>::|->|=>|<-|\x60[^\x60\n]+\x60|(?<![${OPCH}])[=|\\](?![${OPCH}]))`,
+    ].join('|'), 'gm'),
+  };
+  function kind(lang, id, text, end, start) {
+    if (lang === 'c') {
+      if (C_KW.has(id)) return 'k';
+      if (C_TY.has(id) || /_t$/.test(id)) return 't';
+      return /^\s*\(/.test(text.slice(end)) ? 'f' : '';
+    }
+    if (HS_KW.has(id)) return 'k';
+    if (/^[A-Z]/.test(id)) return 't';
+    const line = text.slice(text.lastIndexOf('\n', start - 1) + 1, start);
+    return /^\s*$/.test(line) ? 'f' : '';     // a name at the start of a line is (usually) being defined
+  }
+  return function hl(text, lang) {
+    const re = RE[lang]; if (!re) return esc(text);
+    re.lastIndex = 0; let out = '', last = 0, m;
+    while ((m = re.exec(text))) {
+      if (!m[0]) { re.lastIndex++; continue; }
+      const g = m.groups;
+      const cls = g.com ? 'c' : g.pre ? 'p' : g.str ? 's' : g.num ? 'n' : g.op ? 'o' : g.id ? kind(lang, g.id, text, re.lastIndex, m.index) : '';
+      out += esc(text.slice(last, m.index)) + (cls ? `<span class="hl-${cls}">${esc(m[0])}</span>` : esc(m[0]));
+      last = re.lastIndex;
+    }
+    return out + esc(text.slice(last));
+  };
+})();
+function codeText(el) {
+  const c = el.cloneNode(true);
+  c.querySelectorAll('br').forEach((b) => b.replaceWith('\n'));
+  return c.textContent.replace(/ /g, ' ').replace(/\n$/, '');
+}
+function formatCode(root, lang, isCard) {
+  if (isCard) { // `like this` in plain card text → inline code
+    const tw = document.createTreeWalker(root, NodeFilter.SHOW_TEXT), hits = [];
+    while (tw.nextNode()) if (/`[^`\n]+`/.test(tw.currentNode.data) && !tw.currentNode.parentElement.closest('code,pre')) hits.push(tw.currentNode);
+    for (const n of hits) {
+      const tmp = document.createElement('span');
+      tmp.innerHTML = n.data.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/`([^`\n]+)`/g, '<code>$1</code>');
+      n.replaceWith(...tmp.childNodes);
+    }
+    for (const el of [...root.querySelectorAll('code')]) {
+      if (el.closest('pre') || !(el.querySelector('br') || el.textContent.includes('\n'))) continue;
+      const pre = document.createElement('pre');
+      pre.textContent = codeText(el); el.replaceWith(pre);
+      if (pre.nextSibling && pre.nextSibling.nodeName === 'BR') pre.nextSibling.remove();
+    }
+  }
+  for (const el of root.querySelectorAll('pre, code')) {
+    if (el.tagName === 'CODE' && el.closest('pre')) continue;
+    if ([...el.querySelectorAll('*')].some((n) => !/^(BR|CODE)$/.test(n.nodeName))) continue; // leave rich markup alone
+    if (el.tagName === 'PRE') el.classList.add('code');
+    el.innerHTML = HL(codeText(el), lang);
+  }
+}
+
 /* ---------- topic picker ---------- */
+function showTab(tab) {
+  LS.set('tab', tab);
+  for (const b of $('#tabs').children) b.classList.toggle('on', b.dataset.tab === tab);
+  $('#reviewPick').hidden = tab !== 'review'; $('#practicePick').hidden = tab !== 'practice';
+}
+for (const b of $('#tabs').children) b.onclick = () => { showTab(b.dataset.tab); haptic(1); };
 function openTopics() {
+  $('#tabs').hidden = !!practice;
+  if (practice) $('#reviewPick').hidden = $('#practicePick').hidden = true;
+  else showTab(LS.get('tab', 'review'));
+  $('#practiceNow').hidden = !practice;
+  if (practice) {
+    const s = practice.stats;
+    $('#pNowStats').textContent = `${practice.topics.map(topicName).join(', ')} · ${view().length} left`
+      + (s.reviewed ? ` · ${Math.round((s.correct / s.reviewed) * 100)}% recalled` : '') + '. Nothing here is sent to Anki.';
+    $('#topics').hidden = false;
+    return;
+  }
+  openPracticePick();
   const counts = {};
   for (const c of deck) if (c.topic) counts[c.topic] = (counts[c.topic] || 0) + 1;
   const list = [['', 'All topics', deck.length], ...Object.keys(TOPICS).filter((t) => counts[t]).map((t) => [t, TOPICS[t], counts[t]])];
@@ -368,29 +559,141 @@ function setTopic(t) {
 $('#topicBtn').onclick = openTopics;
 $('#topics .scrim').onclick = () => { $('#topics').hidden = true; };
 
+/* ---------- practice mode ---------- */
+// Go through cards from chosen topics, due or not. Answers stay on the phone: nothing is queued for Anki.
+const shuffle = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [a[i], a[j]] = [a[j], a[i]]; } return a; };
+const practiceQuery = (topics) => (cfg.deck ? `deck:${q(cfg.deck)} ` : '') + '(' + topics.map((t) => 'tag:' + q('Topic::' + t)).join(' OR ') + ') -is:suspended' + (cfg.pNew ? '' : ' -is:new');
+
+function openPracticePick() {
+  const known = LS.get('ptopics', null);
+  const local = [...new Set(deck.map((c) => c.topic).filter(Boolean))];
+  drawPracticeTopics(known || [...new Set([...Object.keys(TOPICS).filter((t) => local.includes(t)), ...local])], LS.get('pcounts', {}));
+  for (const b of $('#pSize').children) b.classList.toggle('on', +b.dataset.n === cfg.pSize);
+  $('#pNew').checked = cfg.pNew; $('#pMsg').textContent = '';
+  refreshPracticeCounts();
+}
+let drawnTopics = [];
+function drawPracticeTopics(list, counts) {
+  const box = $('#pTopics'); box.innerHTML = '';
+  drawnTopics = list.filter((t) => counts[t] !== 0);
+  for (const t of drawnTopics) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'chip' + (cfg.pTopics.includes(t) ? ' on' : '');
+    b.innerHTML = '<span></span><b></b>';
+    b.firstChild.textContent = topicName(t); b.lastChild.textContent = counts[t] ?? '';
+    b.onclick = () => {
+      cfg.pTopics = cfg.pTopics.includes(t) ? cfg.pTopics.filter((x) => x !== t) : [...cfg.pTopics, t];
+      saveCfg(); b.classList.toggle('on'); haptic(1);
+    };
+    box.appendChild(b);
+  }
+  if (!box.children.length) box.innerHTML = '<p class="muted">Topics appear once your cards have Topic:: tags.</p>';
+}
+// real per-topic card counts from Anki when it's reachable (cached for offline)
+async function refreshPracticeCounts() {
+  if (cfg.demo || !cfg.url) return;
+  try {
+    const topics = (await anki('getTags', {}, 5000)).filter((t) => /^Topic::[^:]+$/.test(t)).map((t) => t.slice(7));
+    const res = await anki('multi', { actions: topics.map((t) => ({ action: 'findCards', params: { query: practiceQuery([t]) } })) }, 10000);
+    const counts = {};
+    topics.forEach((t, i) => { const r = res[i]; const ids = r && (r.result !== undefined ? r.result : r); counts[t] = Array.isArray(ids) ? ids.length : 0; });
+    topics.sort((a, b) => (Object.keys(TOPICS).indexOf(a) + 1 || 99) - (Object.keys(TOPICS).indexOf(b) + 1 || 99));
+    LS.set('ptopics', topics); LS.set('pcounts', counts);
+    if (!$('#topics').hidden && !practice) drawPracticeTopics(topics, counts);
+  } catch {}
+}
+for (const b of $('#pSize').children) b.onclick = () => {
+  cfg.pSize = +b.dataset.n; saveCfg();
+  for (const x of $('#pSize').children) x.classList.toggle('on', x === b);
+  haptic(1);
+};
+$('#pNew').onchange = (e) => { cfg.pNew = e.target.checked; saveCfg(); refreshPracticeCounts(); };
+
+async function loadPracticeCards(topics) {
+  const want = cfg.pSize || Infinity;
+  const pool = (await IDB.get('pcache')) || {};
+  if (!cfg.demo && cfg.url) {
+    try {
+      const ids = shuffle(await anki('findCards', { query: practiceQuery(topics) }, 10000)).slice(0, want);
+      const ex = exAll || (await IDB.get('ex')) || await loadExplanations();
+      const cards = await buildCards(await cardsInfo(ids), ex);
+      // keep them for offline practice next time (bounded, newest first)
+      for (const c of cards) pool[c.id] = c;
+      const keys = Object.keys(pool); if (keys.length > 1500) for (const k of keys.slice(0, keys.length - 1500)) delete pool[k];
+      IDB.set('pcache', pool);
+      online = true;
+      return cards;
+    } catch (e) { console.warn('practice fetch failed', e); }
+  }
+  // offline: whatever we already have on the phone for these topics
+  const have = new Map();
+  for (const c of [...Object.values(pool), ...(practice ? practice.saved.deck : deck)]) {
+    if (topics.includes(c.topic) && (cfg.pNew || !c.isNew)) have.set(c.id, c);
+  }
+  if (have.size) toast('Offline · practising cards saved on this phone');
+  return shuffle([...have.values()]).slice(0, want);
+}
+
+async function startPractice(topics) {
+  if (!topics.length) { $('#pMsg').textContent = 'Pick at least one topic.'; return; }
+  $('#pMsg').textContent = 'Loading cards…'; $('#pStart').disabled = true;
+  let cards;
+  try {
+    cards = cfg.demo ? shuffle(deck.filter((c) => topics.includes(c.topic))).slice(0, cfg.pSize || Infinity) : await loadPracticeCards(topics);
+  } finally { $('#pStart').disabled = false; }
+  if (!cards.length) { $('#pMsg').textContent = "No cards for those topics on this phone yet. Connect to Anki once to download them."; return; }
+  cards = cards.map((c) => ({ ...c, next: null, notBefore: 0, learn: false }));
+  if (!practice) practice = { saved: { deck, doneCount, total, combo, history, cur } };
+  Object.assign(practice, { topics, size: cards.length, stats: { reviewed: 0, correct: 0, best: 0 }, cheered: false });
+  deck = cards; doneCount = 0; total = cards.length; combo = 0; history = []; cur = null;
+  document.body.classList.add('practice');
+  $('#topics').hidden = true;
+  render(true); showCombo(); updateUndo(); haptic(2);
+}
+function endPractice() {
+  if (!practice) return;
+  const s = practice.saved; practice = null;
+  ({ deck, doneCount, total, combo, history } = s); cur = null;
+  document.body.classList.remove('practice');
+  $('#topics').hidden = true;
+  render(true); showCombo(); updateUndo(); setStatus(); haptic(1);
+}
+$('#pStart').onclick = () => startPractice(cfg.pTopics.filter((t) => drawnTopics.includes(t)));
+$('#pEnd').onclick = endPractice;
+$('#done2').onclick = endPractice;
+
 let uidSeq = Date.now();
 function answer(ease, dir, px, py) {
   if (!cur || !curEl) return;
   const card = cur, el = curEl;
-  const h = { uid: ++uidSeq, card: { ...card }, ease, dir, combo, doneCount, stats: { ...stats }, reinserted: null };
-  if (!cfg.demo) queue.push({ uid: h.uid, cardId: card.id, ease, t: Date.now() });
+  const st = practice ? practice.stats : stats;
+  const h = { uid: ++uidSeq, card: { ...card }, ease, dir, combo, doneCount, stats: { ...st }, reinserted: null };
+  if (!cfg.demo && !practice) queue.push({ uid: h.uid, cardId: card.id, ease, t: Date.now() });   // practice never reaches Anki
   const at = deck.indexOf(card); deck.splice(at < 0 ? 0 : at, 1);
   closeExplain();
 
-  // Follow Anki's learning steps locally (with their real delays) so the day works offline
-  // and cards come back exactly when Anki would show them, not sooner or more often.
-  const ns = nextStep(card, ease);
-  let again = null;
-  if (ns) {
-    again = { ...card, ...ns, isNew: false, learn: true, next: null, notBefore: Date.now() + ns.wait * 60e3 };
-    deck.splice(posAfter(3), 0, again); h.reinserted = again;
-  } else doneCount++;
+  if (practice) {
+    // no scheduling: Again comes back in a few cards, Hard a bit later, Good/Easy are done
+    if (ease <= 2) {
+      const again = { ...card };
+      deck.splice(Math.min(deck.length, ease === 1 ? 3 : 7), 0, again); h.reinserted = again;
+    } else doneCount++;
+  } else {
+    // Follow Anki's learning steps locally (with their real delays) so the day works offline
+    // and cards come back exactly when Anki would show them, not sooner or more often.
+    const ns = nextStep(card, ease);
+    if (ns) {
+      const again = { ...card, ...ns, isNew: false, learn: true, next: null, notBefore: Date.now() + ns.wait * 60e3 };
+      deck.splice(posAfter(3), 0, again); h.reinserted = again;
+    } else doneCount++;
+  }
 
-  stats.reviewed++; if (ease > 1) stats.correct++;
+  st.reviewed++; if (ease > 1) st.correct++;
   const broke = ease <= 2 && combo >= 3 ? combo : 0;   // Again and Hard both end the streak
   combo = ease > 2 ? combo + 1 : 0;
-  stats.best = Math.max(stats.best, combo);
-  LS.set('stats', stats); LS.set('hinted', true); $('#hint').hidden = true;
+  st.best = Math.max(st.best, combo);
+  if (!practice) LS.set('stats', stats);
+  LS.set('hinted', true); $('#hint').hidden = true;
   history.push(h); if (history.length > 30) history.shift();
   persist();
 
@@ -414,6 +717,10 @@ function answer(ease, dir, px, py) {
   if (nextEl) { nextEl.classList.remove('next'); nextEl.style.transform = 'none'; nextEl.style.opacity = '1'; }
   cur = null; curEl = null;
   setTimeout(() => { el.remove(); render(true); }, 200);
+
+  // Missed it? Show the explanation straight away (Settings → Show explanation automatically).
+  const autoAt = cfg.autoEx === 'hard' ? 2 : cfg.autoEx === 'again' ? 1 : 0;
+  if (card.ex && ease <= autoAt) setTimeout(() => { if ($('#ex').hidden && $('#sheet').hidden) openExplain(card, true); }, 380);
 
   scheduleFlush(); setStatus(); updateUndo();
 }
@@ -506,7 +813,7 @@ function celebrate(tier = 1) {
 /* ---------- undo ---------- */
 function canUndo() {
   const h = history[history.length - 1];
-  return !!h && (cfg.demo || queue.some((a) => a.uid === h.uid));
+  return !!h && (cfg.demo || !!practice || queue.some((a) => a.uid === h.uid));
 }
 function updateUndo() { $('#undo').classList.toggle('on', canUndo()); }
 setInterval(updateUndo, 1000);
@@ -520,8 +827,9 @@ function undo() {
   queue = queue.filter((a) => a.uid !== h.uid);
   if (h.reinserted) { const i = deck.indexOf(h.reinserted); if (i >= 0) deck.splice(i, 1); }
   deck.unshift(h.card);
-  combo = h.combo; doneCount = h.doneCount; stats = h.stats;
-  LS.set('stats', stats); persist();
+  combo = h.combo; doneCount = h.doneCount;
+  if (practice) practice.stats = h.stats; else { stats = h.stats; LS.set('stats', stats); }
+  persist();
   render(true);
   // fly back in from where it left, already flipped
   if (curEl) {
@@ -813,6 +1121,7 @@ function openSheet(msg, cls) {
   $('#sUrl').value = cfg.url || (MOBILE ? '' : 'http://localhost:8765');
   $('#sKey').value = cfg.key; $('#sNew').value = cfg.newLimit; $('#sRev').value = cfg.revLimit;
   $('#sWeb').checked = cfg.ankiweb; $('#sSound').checked = cfg.sound; $('#sHap').checked = cfg.haptics;
+  $('#sAutoEx').value = cfg.autoEx;
   const m = $('#sMsg'); m.textContent = msg || ''; m.className = cls || '';
   fillDecks(LS.get('decks', []));
   $('#sheet').hidden = false;
@@ -827,6 +1136,7 @@ $('#sClose').onclick = closeSheet;
 $('#sSound').onchange = (e) => { cfg.sound = e.target.checked; saveCfg(); if (cfg.sound) SFX.good(3, 2); };
 $('#sHap').onchange = (e) => { cfg.haptics = e.target.checked; saveCfg(); haptic(1); };
 $('#sWeb').onchange = (e) => { cfg.ankiweb = e.target.checked; saveCfg(); };
+$('#sAutoEx').onchange = (e) => { cfg.autoEx = e.target.value; saveCfg(); };
 
 $('#sSave').onclick = async () => {
   const url = $('#sUrl').value.trim();
@@ -860,9 +1170,14 @@ $('#sDemo').onclick = () => {
   queue = []; history = []; cur = null; doneCount = 0; combo = 0; total = deck.length; online = false; showDone.shown = false;
   closeSheet(); render(true); showCombo(); updateUndo();
 };
-$('#refresh').onclick = () => (cfg.topic && deck.length) ? setTopic('') : cfg.demo ? $('#sDemo').onclick() : sync(true, true);
+$('#refresh').onclick = () => practice ? startPractice(practice.topics)
+  : (cfg.topic && deck.length) ? setTopic('') : cfg.demo ? $('#sDemo').onclick() : sync(true, true);
 
 const DEMO = [
+  { q: 'Write a C function returning the larger of two ints.', a: '<code>int max(int a, int b) {<br>&nbsp;&nbsp;return a &gt; b ? a : b; // ternary<br>}</code>', topic: 'C',
+    ex: '<p>The conditional operator <code>a &gt; b ? a : b</code> picks one of two values, so the whole body is one <code>return</code>.</p><pre>int m = max(3, 7);   // 7\nprintf("%d\\n", m);</pre>' },
+  { q: 'Define <code>map</code> recursively.', a: '<code>map :: (a -&gt; b) -&gt; [a] -&gt; [b]<br>map _ [] = []<br>map f (x:xs) = f x : map f xs</code>', topic: 'Haskell',
+    ex: '<p>Empty list in, empty list out. Otherwise apply <code>f</code> to the head and <code>map</code> the tail.</p><pre>map (*2) [1,2,3]   -- [2,4,6]\nmap show [True]    -- ["True"]</pre>' },
   { q: 'Capital of Australia?', a: 'Canberra', topic: 'Geography' },
   { q: 'Big-O of binary search?', a: '<b>O(log n)</b>', topic: 'C', ex: "<p>Each comparison <b>halves</b> the part of the array still in play: n → n/2 → n/4 → … → 1. The number of halvings is log₂ n.</p><p>For a million items that's about 20 steps.</p><p><b>Requirement:</b> the array must already be sorted.</p>" },
   { q: 'Who proposed the multi-store model of memory?', a: 'Atkinson &amp; Shiffrin (1968)', topic: 'Psychology' },
@@ -889,6 +1204,7 @@ const DEMO = [
 (async function boot() {
   deck = (await IDB.get('deck')) || [];
   queue = (await IDB.get('queue')) || [];
+  tagQueue = (await IDB.get('tags')) || [];
   const meta = (await IDB.get('meta')) || {};
   doneCount = meta.doneCount || 0; total = meta.total || deck.length; combo = meta.combo || 0;
   if (stats.day !== (LS.get('stats', {}).day)) { doneCount = 0; total = deck.length; }
@@ -907,9 +1223,9 @@ const DEMO = [
 document.addEventListener('visibilitychange', () => {
   if (cfg.demo) return;
   if (document.visibilityState === 'visible') sync(Date.now() - lastFetch > 5 * 60e3 || !deck.length);
-  else { persist(); if (queue.length) flush(true).catch(() => {}); }  // leaving the app: push everything
+  else { persist(); if (queue.length) flush(true).catch(() => {}); flushTags().catch(() => {}); }  // leaving the app: push everything
 });
 addEventListener('online', () => sync(!deck.length));
-setInterval(() => { if (queue.length && document.visibilityState === 'visible' && Date.now() > retryAt) sync(false); }, 60000);
+setInterval(() => { if ((queue.length || tagQueue.length) && document.visibilityState === 'visible' && Date.now() > retryAt) sync(false); }, 60000);
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

@@ -51,6 +51,7 @@
   <div class="big">All caught up</div>
   <div id="doneStats"></div>
   <button id="refresh" class="ghost">Check for more</button>
+  <button id="done2" class="ghost" hidden>Back to reviews</button>
 </section>
 
 <div id="sheet" hidden>
@@ -79,6 +80,13 @@
     <label class="tog"><input id="sWeb" type="checkbox"> Sync Anki to AnkiWeb after reviews</label>
     <label class="tog"><input id="sSound" type="checkbox"> Sound</label>
     <label class="tog"><input id="sHap" type="checkbox"> Haptics</label>
+    <label>Show the explanation automatically
+      <select id="sAutoEx">
+        <option value="hard">After Hard or Again</option>
+        <option value="again">After Again only</option>
+        <option value="off">Never (use the Explain button)</option>
+      </select>
+    </label>
     <p id="sMsg"></p>
     <div class="btns">
       <button id="sSave" class="primary" type="button">Save &amp; sync</button>
@@ -93,7 +101,9 @@
     <div class="grab"></div>
     <div class="head"><div><small id="exTopic"></small><h2>Explanation</h2></div><button id="exClose" class="icon" type="button" aria-label="Close explanation">
       <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+    <div id="exCard" hidden></div>
     <div id="exBody"></div>
+    <button id="exBad" type="button"></button>
   </div>
 </div>
 
@@ -101,8 +111,27 @@
   <div class="scrim"></div>
   <div class="panel">
     <div class="grab"></div>
-    <h2>Topic</h2>
-    <div id="topicList"></div>
+    <div id="tabs" class="seg two" role="tablist">
+      <button type="button" data-tab="review">Review</button><button type="button" data-tab="practice">Practice</button>
+    </div>
+    <div id="reviewPick">
+      <div id="topicList"></div>
+    </div>
+    <div id="practicePick">
+      <p class="muted">Go through cards from any topics, due or not. Your answers stay on this phone and are never sent to Anki.</p>
+      <div id="pTopics"></div>
+      <div id="pSize" class="seg" role="group" aria-label="How many cards">
+        <button type="button" data-n="20">20</button><button type="button" data-n="50">50</button><button type="button" data-n="100">100</button><button type="button" data-n="0">All</button>
+      </div>
+      <label class="tog"><input id="pNew" type="checkbox"> Include cards you haven't studied yet</label>
+      <button id="pStart" class="primary" type="button">Start practice</button>
+      <p id="pMsg" class="muted"></p>
+    </div>
+    <div id="practiceNow" hidden>
+      <h2>Practice</h2>
+      <p id="pNowStats" class="muted"></p>
+      <button id="pEnd" class="primary" type="button">End practice</button>
+    </div>
   </div>
 </div>
 
