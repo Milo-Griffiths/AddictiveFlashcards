@@ -1,5 +1,5 @@
 // App-shell cache so the app opens instantly and works offline.
-const V = 'flow-v9';
+const V = 'flow-v10';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {

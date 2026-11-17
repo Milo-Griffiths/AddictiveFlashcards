@@ -40,7 +40,7 @@ const IDB = (() => {
 
 const cfg = Object.assign(
   { url: '', key: '', deck: '', newLimit: 20, revLimit: 300, ankiweb: true, sound: true, haptics: true, demo: false, topic: '',
-    autoEx: 'hard', pTopics: [], pSize: 50, pNew: false, pMode: 'random' },
+    autoEx: 'hard', exSkipRead: true, pTopics: [], pSize: 50, pNew: false, pMode: 'random' },
   LS.get('cfg', {})
 );
 if (cfg.v !== 2) { cfg.sound = true; cfg.haptics = true; cfg.v = 2; }
@@ -293,8 +293,11 @@ function setStatus() {
   el.className = 'pill ' + (syncing ? 'busy' : waiting ? 'pending' : online || cfg.demo ? 'ok' : '') + (practice ? ' practice' : '');
   const left = view().length;
   // the count of cards left always comes first; sync state is secondary (the dot colour shows it too)
-  const state = cfg.demo ? 'demo' : syncing ? 'syncing' : waiting ? `${waiting} to sync` : online ? '' : 'offline';
+  // (no "syncing" word: the dot blinks blue while it syncs, and the extra text crowded the header)
+  // waiting answers show as "↑3" (3 waiting to upload) so it fits beside a long topic name on a phone
+  const state = cfg.demo ? 'demo' : waiting ? `↑${waiting}` : online || syncing ? '' : 'offline';
   t.textContent = !cfg.url && !cfg.demo ? 'Set up' : `${left} left` + (state ? ` · ${state}` : '');
+  el.setAttribute('aria-label', `${left} cards left` + (waiting ? `, ${waiting} waiting to sync` : '') + '. Tap to sync now.');
   // the topic / practice button says what you're looking at
   const b = $('#topicBtn');
   $('#topicLbl').textContent = practice ? 'Practice' : cfg.topic ? topicName(cfg.topic) : 'All topics';
@@ -397,10 +400,12 @@ function revealedUI(el, c) {
 
 /* ---------- explanation sheet ---------- */
 let exCard = null;
+let exReadId = null;   // card whose explanation you opened yourself while it was on screen
 // `auto`: opened by itself after Hard/Again, when the card has already flown away, so recap it at the top
 function openExplain(c, auto) {
   if (!c || !c.ex) return;
   exCard = c;
+  if (!auto) exReadId = c.id;   // read by choice: don't pop it up again when this card is graded
   const lang = langOf(c), recap = $('#exCard');
   recap.hidden = !auto;
   if (auto) {
@@ -777,8 +782,11 @@ function answer(ease, dir, px, py) {
   setTimeout(() => { el.remove(); render(true); }, 200);
 
   // Missed it? Show the explanation straight away (Settings → Show explanation automatically).
+  // …unless you already opened it yourself on this showing of the card (Settings → Skip if I've already read it).
   const autoAt = cfg.autoEx === 'hard' ? 2 : cfg.autoEx === 'again' ? 1 : 0;
-  if (card.ex && ease <= autoAt) setTimeout(() => { if ($('#ex').hidden && $('#sheet').hidden) openExplain(card, true); }, 380);
+  const alreadyRead = cfg.exSkipRead && exReadId === card.id;
+  exReadId = null;
+  if (card.ex && ease <= autoAt && !alreadyRead) setTimeout(() => { if ($('#ex').hidden && $('#sheet').hidden) openExplain(card, true); }, 380);
 
   scheduleFlush(); setStatus(); updateUndo();
 }
@@ -1019,18 +1027,38 @@ const SFX = (() => {
   const PENTA = [0, 2, 4, 7, 9];
   // C4 pentatonic climbing gently with the streak, capped so it never gets shrill (max ~E5)
   const note = (i) => { i = Math.min(i, 7); return 261.63 * Math.pow(2, (PENTA[i % 5] + 12 * Math.floor(i / 5)) / 12); };
+  // iOS stops Web Audio in two ways: 'suspended', and Safari's own 'interrupted' (after a call, Siri,
+  // a notification, another app's audio, or locking the phone). Only 'suspended' used to be handled, so
+  // after an interruption the app stayed silent until it was restarted. Now any non-running state is
+  // resumed, a context that still won't run is thrown away and rebuilt, and coming back from the
+  // background always starts a fresh one (iOS can leave an old one "running" but silent).
+  let stale = false;
+  function build() {
+    try {
+      ac = new (window.AudioContext || window.webkitAudioContext)();
+      const comp = ac.createDynamicsCompressor(); out = ac.createGain(); out.gain.value = 0.5;
+      out.connect(comp).connect(ac.destination);
+    } catch { ac = null; }
+  }
+  function drop() { const a = ac; ac = null; out = null; if (a) a.close().catch(() => {}); }
   function ctx() {
     if (!cfg.sound) return null;
-    if (!ac) {
-      try {
-        ac = new (window.AudioContext || window.webkitAudioContext)();
-        const comp = ac.createDynamicsCompressor(); out = ac.createGain(); out.gain.value = 0.5;
-        out.connect(comp).connect(ac.destination);
-      } catch { return null; }
+    if (ac && (stale || ac.state === 'closed')) drop();
+    stale = false;
+    if (!ac) build();
+    if (!ac) return null;
+    if (ac.state !== 'running') {
+      const a = ac;
+      a.resume().catch(() => {});
+      clearTimeout(ctx.t);
+      ctx.t = setTimeout(() => { if (ac === a && a.state !== 'running') drop(); }, 800);
     }
-    if (ac.state === 'suspended') ac.resume();
     return ac;
   }
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') stale = true; });
+  addEventListener('pageshow', (e) => { if (e.persisted) stale = true; });
+  // touchend / click count as a user gesture on iOS (pointerdown/touchstart don't always), so wake audio on those
+  for (const ev of ['touchend', 'click', 'keydown']) document.addEventListener(ev, () => { if (cfg.sound && (!ac || ac.state !== 'running' || stale)) ctx(); }, { capture: true, passive: true });
   function tone(f, { t = 0, dur = 0.18, type = 'sine', vol = 0.3, to = null, attack = 0.005, filter = null } = {}) {
     const a = ctx(); if (!a) return;
     const s = a.currentTime + t, o = a.createOscillator(), g = a.createGain();
@@ -1179,7 +1207,8 @@ function openSheet(msg, cls) {
   $('#sUrl').value = cfg.url || (MOBILE ? '' : 'http://localhost:8765');
   $('#sKey').value = cfg.key; $('#sNew').value = cfg.newLimit; $('#sRev').value = cfg.revLimit;
   $('#sWeb').checked = cfg.ankiweb; $('#sSound').checked = cfg.sound; $('#sHap').checked = cfg.haptics;
-  $('#sAutoEx').value = cfg.autoEx;
+  $('#sAutoEx').value = cfg.autoEx; $('#sSkipRead').checked = cfg.exSkipRead;
+  $('#sSkipRow').hidden = cfg.autoEx === 'off';
   const m = $('#sMsg'); m.textContent = msg || ''; m.className = cls || '';
   fillDecks(LS.get('decks', []));
   $('#sheet').hidden = false;
@@ -1194,7 +1223,8 @@ $('#sClose').onclick = closeSheet;
 $('#sSound').onchange = (e) => { cfg.sound = e.target.checked; saveCfg(); if (cfg.sound) SFX.good(3, 2); };
 $('#sHap').onchange = (e) => { cfg.haptics = e.target.checked; saveCfg(); haptic(1); };
 $('#sWeb').onchange = (e) => { cfg.ankiweb = e.target.checked; saveCfg(); };
-$('#sAutoEx').onchange = (e) => { cfg.autoEx = e.target.value; saveCfg(); };
+$('#sAutoEx').onchange = (e) => { cfg.autoEx = e.target.value; saveCfg(); $('#sSkipRow').hidden = cfg.autoEx === 'off'; };
+$('#sSkipRead').onchange = (e) => { cfg.exSkipRead = e.target.checked; saveCfg(); };
 
 $('#sSave').onclick = async () => {
   const url = $('#sUrl').value.trim();

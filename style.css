@@ -33,9 +33,11 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   background: var(--bg);
 }
-#top .left { display: flex; align-items: center; gap: 4px; min-width: 0; }
+/* the left side shrinks (with an ellipsis) so its text can never slide under the buttons on the right */
+#top .left { display: flex; align-items: center; gap: 4px; flex: 1 1 auto; min-width: 0; overflow: hidden; }
+#top .right { flex: none; }
 .pill {
-  display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 12px; border-radius: 99px;
+  display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 12px; border-radius: 99px; min-width: 0; max-width: 100%;
   font-size: 15px; font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap;
 }
 .pill span { overflow: hidden; text-overflow: ellipsis; }

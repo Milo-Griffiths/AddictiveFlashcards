@@ -111,14 +111,15 @@ Installed, it opens full-screen and keeps working offline.
 | Deck | Review one deck, or all decks. |
 | New cards / Review cap | Upper limits for the day. Anki's own daily limits from your deck options also apply. |
 | Sync Anki to AnkiWeb after reviews | After sending answers, ask Anki desktop to sync with AnkiWeb so your other devices see them. |
-| Sound / Haptics | Haptics need Android, or iOS 18+. |
+| Sound / Haptics | Haptics need Android, or iOS 18+. On iPhone, sound follows the silent switch. |
 | Show the explanation automatically | After Hard or Again (default), after Again only, or never. |
+| Not if I already opened it on that card | On by default. If you opened the explanation yourself before grading, it won't pop up again. |
 
 ## All-day offline
 
 Open the app once while Anki is reachable, and it downloads the whole day's cards, including learning cards due later. After that you can review with the computer closed. Cards you get wrong, and new or learning cards, come back after their real Anki step delay (from your deck options, e.g. 1 min then 10 min). If nothing else is left, they can come up to 20 minutes early, like Anki's "learn ahead". Answers wait on the device and are sent the next time Anki can be reached. Anki schedules them as of that moment, so intervals can be off by about a day.
 
-The dot next to the cards-left count (top left) shows the state: **green** synced, **amber** answers waiting, **grey** offline. Tap it to force a sync.
+The dot next to the cards-left count (top left) shows the state: **green** synced, **blinking blue** syncing, **amber** answers waiting (shown as e.g. **↑3**), **grey** offline. Tap it to force a sync.
 
 ## Topics and practice mode
 
