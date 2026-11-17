@@ -242,7 +242,9 @@ function setStatus() {
   const el = $('#status'), t = el.querySelector('span');
   el.className = 'pill ' + (syncing ? 'busy' : queue.length ? 'pending' : online || cfg.demo ? 'ok' : '');
   const left = view().length, pre = cfg.topic ? topicName(cfg.topic) + ' · ' : '';
-  t.textContent = cfg.demo ? pre + 'demo' : syncing ? 'syncing' : queue.length ? `${queue.length} to sync` : online ? `${pre}${left} left` : (cfg.url ? `offline · ${pre}${left} left` : 'set up');
+  // the count of cards left always comes first; sync state is secondary (the dot colour shows it too)
+  const state = cfg.demo ? 'demo' : syncing ? 'syncing' : queue.length ? `${queue.length} to sync` : online ? '' : 'offline';
+  t.textContent = !cfg.url && !cfg.demo ? 'set up' : `${pre}${left} left` + (state ? ` · ${state}` : '');
 }
 
 /* ---------- rendering ---------- */
