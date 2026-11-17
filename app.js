@@ -291,10 +291,14 @@ function setStatus() {
   const el = $('#status'), t = el.querySelector('span');
   const waiting = queue.length + tagQueue.length;
   el.className = 'pill ' + (syncing ? 'busy' : waiting ? 'pending' : online || cfg.demo ? 'ok' : '') + (practice ? ' practice' : '');
-  const left = view().length, pre = practice ? 'Practice · ' : cfg.topic ? topicName(cfg.topic) + ' · ' : '';
+  const left = view().length;
   // the count of cards left always comes first; sync state is secondary (the dot colour shows it too)
   const state = cfg.demo ? 'demo' : syncing ? 'syncing' : waiting ? `${waiting} to sync` : online ? '' : 'offline';
-  t.textContent = !cfg.url && !cfg.demo ? 'set up' : `${pre}${left} left` + (state ? ` · ${state}` : '');
+  t.textContent = !cfg.url && !cfg.demo ? 'Set up' : `${left} left` + (state ? ` · ${state}` : '');
+  // the topic / practice button says what you're looking at
+  const b = $('#topicBtn');
+  $('#topicLbl').textContent = practice ? 'Practice' : cfg.topic ? topicName(cfg.topic) : 'All topics';
+  b.className = 'tbtn' + (practice ? ' practice' : cfg.topic ? ' topic' : '');
 }
 
 /* ---------- rendering ---------- */
@@ -1065,7 +1069,7 @@ const SFX = (() => {
 const FX = (() => {
   const cv = $('#fx'), cx = cv.getContext('2d');
   let W, H, dpr, P = [], waves = [], raf = 0;
-  const size = () => { dpr = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; cv.width = W * dpr; cv.height = H * dpr; cx.setTransform(dpr, 0, 0, dpr, 0, 0); };
+  const size = () => { dpr = Math.min(devicePixelRatio || 1, 3); /* full sharpness on 3× iPhones */ W = innerWidth; H = innerHeight; cv.width = W * dpr; cv.height = H * dpr; cx.setTransform(dpr, 0, 0, dpr, 0, 0); };
   size(); addEventListener('resize', size);
   const PAL = ['#ffc94d', '#ff8a4d', '#ff5c7a', '#ff7ad9', '#5cc8ff', '#57e39b', '#ffffff'];
   const pick = (a) => a[(Math.random() * a.length) | 0];

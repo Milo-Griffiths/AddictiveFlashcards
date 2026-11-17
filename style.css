@@ -26,22 +26,41 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 #fx { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 30; }
 
 /* Top bar */
+/* A solid band, so nothing on the page ever sits under (or gets blurred by) the iOS status bar. */
 #top {
   position: fixed; top: 0; left: 0; right: 0; z-index: 20;
-  padding: calc(var(--safe-t) + 10px) 16px 8px;
-  display: flex; align-items: center; justify-content: space-between;
+  padding: calc(var(--safe-t) + 8px) 12px 8px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  background: var(--bg);
 }
-.pill { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--dim); padding: 6px 10px; border-radius: 99px; }
-.pill i { width: 7px; height: 7px; border-radius: 50%; background: #555; transition: background .3s; }
+#top .left { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.pill {
+  display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 12px; border-radius: 99px;
+  font-size: 15px; font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.pill span { overflow: hidden; text-overflow: ellipsis; }
+.pill i { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #666; transition: background .3s; }
 .pill.ok i { background: var(--good); box-shadow: 0 0 8px var(--good); }
 .pill.pending i { background: var(--accent); }
 .pill.busy i { background: var(--easy); animation: blink 0.8s infinite alternate; }
 @keyframes blink { to { opacity: .25; } }
-.icon { color: var(--dim); padding: 6px; display: grid; place-items: center; }
+.icon { color: #c4c4d0; width: 42px; height: 42px; display: grid; place-items: center; border-radius: 12px; }
+.icon:active, .tbtn:active, .pill:active { background: var(--card2); }
+/* topic / practice picker: a labelled button instead of an icon */
+.tbtn {
+  display: flex; align-items: center; gap: 6px; height: 36px; max-width: 150px; padding: 0 12px; border-radius: 99px;
+  border: 1px solid var(--line); background: var(--card); color: var(--text); font-size: 15px; font-weight: 500;
+}
+.tbtn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tbtn svg { flex: none; color: var(--dim); }
+.tbtn.topic { border-color: rgba(255,201,77,.45); color: var(--accent); }
+.tbtn.practice { border-color: rgba(196,156,255,.5); color: #c49cff; }
+/* streak badge sits on the card's top edge, out of the way of the header buttons */
 #combo {
-  position: absolute; left: 50%; top: calc(var(--safe-t) + 8px); transform: translateX(-50%);
-  font-weight: 700; font-size: 18px; letter-spacing: .02em; font-variant-numeric: tabular-nums;
-  color: var(--accent); opacity: 0; transition: opacity .25s;
+  position: fixed; left: 50%; top: calc(var(--safe-t) + 57px); z-index: 21; transform: translateX(-50%);
+  font-weight: 700; font-size: 15px; letter-spacing: .02em; font-variant-numeric: tabular-nums; white-space: nowrap;
+  color: var(--accent); background: var(--bg); border: 1px solid var(--line); border-radius: 99px; padding: 1px 12px;
+  opacity: 0; transition: opacity .25s; pointer-events: none;
 }
 #combo.on { opacity: 1; }
 #combo.pop { animation: pop .35s cubic-bezier(.2,1.6,.4,1); }
@@ -54,7 +73,7 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .card {
   position: absolute;
   left: 16px; right: 16px;
-  top: calc(var(--safe-t) + 60px); bottom: calc(var(--safe-b) + 28px);
+  top: calc(var(--safe-t) + 70px); bottom: calc(var(--safe-b) + 28px);
   max-width: 560px; margin: 0 auto;
   background: var(--card); border: 1px solid var(--line); border-radius: 28px;
   display: flex; flex-direction: column; overflow: hidden;
@@ -86,7 +105,7 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .card ul, .card ol { text-align: left; display: inline-block; margin: 6px 0; }
 .card table { margin: 0 auto; border-collapse: collapse; font-size: .8em; }
 .card td, .card th { border: 1px solid var(--line); padding: 4px 8px; }
-.card .foot { display: flex; justify-content: space-between; padding: 0 22px 16px; font-size: 12px; color: var(--dim); opacity: .7; }
+.card .foot { display: flex; justify-content: space-between; padding: 0 22px 16px; font-size: 13px; color: var(--dim); }
 .card .foot .tag { padding: 2px 8px; border-radius: 99px; background: var(--card2); }
 .card.flip { animation: flip .32s cubic-bezier(.3,1.4,.5,1); }
 @keyframes flip { 0% { transform: scale(.97); } 100% { transform: scale(1); } }
@@ -140,8 +159,9 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 
 /* top-right controls */
 #top .right { display: flex; align-items: center; gap: 2px; }
-#undo { opacity: 0; transform: scale(.7); pointer-events: none; transition: opacity .2s, transform .25s cubic-bezier(.2,1.6,.4,1); color: var(--text); }
-#undo.on { opacity: 1; transform: none; pointer-events: auto; }
+#undo { opacity: 0; transform: scale(.7); pointer-events: none; color: var(--text); width: 0; overflow: hidden;
+  transition: opacity .2s, transform .25s cubic-bezier(.2,1.6,.4,1), width .2s; }
+#undo.on { opacity: 1; transform: none; pointer-events: auto; width: 42px; }
 #sheet .head { display: flex; align-items: center; justify-content: space-between; }
 #sClose { margin-right: -6px; }
 
@@ -176,7 +196,7 @@ body:has(#flash.again) #stage { animation: shake .35s; }
 
 /* combo broken */
 #broke {
-  position: fixed; left: 50%; top: calc(var(--safe-t) + 8px); z-index: 21; pointer-events: none;
+  position: fixed; left: 50%; top: calc(var(--safe-t) + 57px); z-index: 21; pointer-events: none;
   font-weight: 700; font-size: 18px; color: var(--again); opacity: 0; text-decoration: line-through; translate: -50% 0;
 }
 #broke.go { animation: broke .9s cubic-bezier(.5,0,.8,.6) forwards; }

@@ -118,12 +118,12 @@ Installed, it opens full-screen and keeps working offline.
 
 Open the app once while Anki is reachable, and it downloads the whole day's cards, including learning cards due later. After that you can review with the computer closed. Cards you get wrong, and new or learning cards, come back after their real Anki step delay (from your deck options, e.g. 1 min then 10 min). If nothing else is left, they can come up to 20 minutes early, like Anki's "learn ahead". Answers wait on the device and are sent the next time Anki can be reached. Anki schedules them as of that moment, so intervals can be off by about a day.
 
-The dot in the top left shows the state: **green** synced, **amber** answers waiting, **grey** offline. Tap it to force a sync.
+The dot next to the cards-left count (top left) shows the state: **green** synced, **amber** answers waiting, **grey** offline. Tap it to force a sync.
 
 ## Topics and practice mode
 
-- **Topics** come from note tags of the form `Topic::Name` (e.g. `Topic::Biology`). Tap the layers icon (top right) to review one topic at a time. Notes without a topic tag still appear under *All topics*.
-- **Practice:** layers icon → **Practice**. Choose **Random** or **Hardest**, pick topics (or none for all), and how many cards (20, 50, 100 or all). **Nothing from practice is sent to Anki**, and today's review stats aren't touched. Again brings a card back a few cards later, Hard a little later. Your review session is parked and comes back exactly as it was when you tap *End practice*. Practised cards are kept on the device, so you can practise them offline later.
+- **Topics** come from note tags of the form `Topic::Name` (e.g. `Topic::Biology`). Tap the **All topics ▾** button at the top to review one topic at a time (it then shows that topic's name). Notes without a topic tag still appear under *All topics*.
+- **Practice:** **All topics ▾** → **Practice** tab. While practising, the button reads **Practice ▾**. Choose **Random** or **Hardest**, pick topics (or none for all), and how many cards (20, 50, 100 or all). **Nothing from practice is sent to Anki**, and today's review stats aren't touched. Again brings a card back a few cards later, Hard a little later. Your review session is parked and comes back exactly as it was when you tap *End practice*. Practised cards are kept on the device, so you can practise them offline later.
   - **Random:** a shuffled set, whether or not the cards are due. You can include cards you haven't studied yet.
   - **Hardest:** the cards you've been missing, worst first. Each studied card is scored from its last 12 answers in Anki's review log. Recent answers count most (each older one counts ×0.75), Hard counts as 0.6 of an Again, answers while first learning a card count half, and a card needs several misses to rank high. Cards with no recent misses are left out, and each card shows why it was picked (e.g. "missed 5 of last 6"). The ranking is saved, so this also works offline using the cards already on the device. Since practice isn't sent to Anki, practising a card doesn't lower its score. Answering it well in a real review does.
 
