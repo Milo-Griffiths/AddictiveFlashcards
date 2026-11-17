@@ -39,7 +39,7 @@ const IDB = (() => {
 })();
 
 const cfg = Object.assign(
-  { url: '', key: '', deck: '', newLimit: 20, revLimit: 300, ankiweb: true, sound: true, haptics: true, demo: false },
+  { url: '', key: '', deck: '', newLimit: 20, revLimit: 300, ankiweb: true, sound: true, haptics: true, demo: false, topic: '' },
   LS.get('cfg', {})
 );
 if (cfg.v !== 2) { cfg.sound = true; cfg.haptics = true; cfg.v = 2; }
@@ -56,6 +56,16 @@ let online = false, syncing = false, lastFetch = 0, retryAt = 0;
 const today = () => new Date().toLocaleDateString('en-CA');
 let stats = LS.get('stats', {});
 if (stats.day !== today()) stats = { day: today(), reviewed: 0, best: 0, correct: 0 };
+const TOPICS = { Architecture: 'Architecture', Haskell: 'Haskell', C: 'C', SoftwareTools: 'Software Tools', Maths: 'Maths', Psychology: 'Psychology', Geography: 'Geography' };
+const topicName = (t) => TOPICS[t] || t;
+const inTopic = (c) => !cfg.topic || c.topic === cfg.topic;
+const view = () => deck.filter(inTopic);
+// index in `deck` just before the (n+1)-th card of the current topic, for re-inserting "again" cards
+function posAfter(n) {
+  let seen = 0;
+  for (let i = 0; i < deck.length; i++) if (inTopic(deck[i])) { if (seen === n) return i; seen++; }
+  return deck.length;
+}
 const persist = () => { IDB.set('queue', queue); IDB.set('deck', deck); IDB.set('meta', { doneCount, total, combo }); };
 
 /* ---------- AnkiConnect ---------- */
@@ -133,8 +143,18 @@ async function fetchDeck() {
   const ids = [...new Set([...due.slice(0, Math.max(revCap, 0)), ...learn, ...fresh.slice(0, newCap)])];
   const info = [];
   for (let i = 0; i < ids.length; i += 100) info.push(...await anki('cardsInfo', { cards: ids.slice(i, i + 100) }, 20000));
+  // topic tags (Topic::X) live on notes
+  const noteIds = [...new Set(info.map((c) => c.note))], topicOf = {};
+  for (let i = 0; i < noteIds.length; i += 200) {
+    for (const n of await anki('notesInfo', { notes: noteIds.slice(i, i + 200) }, 20000)) {
+      const t = (n.tags || []).find((x) => x.startsWith('Topic::'));
+      if (t) topicOf[n.noteId] = t.slice(7);
+    }
+  }
+  const ex = await loadExplanations();
   const cards = info.map((c) => ({
-    id: c.cardId, deck: c.deckName, isNew: c.type === 0, learn: c.type === 1 || c.type === 3,
+    id: c.cardId, note: c.note, deck: c.deckName, isNew: c.type === 0, learn: c.type === 1 || c.type === 3,
+    topic: topicOf[c.note] || null, ex: ex[c.note] || null,
     q: clean(c.question), a: splitAnswer(c.question, c.answer),
     next: (c.nextReviews || []).map((s) => s.replace(/[⁨⁩]/g, '')),
   }));
@@ -146,6 +166,17 @@ async function fetchDeck() {
     if (news.length) out.push(news.shift());
   }
   return out;
+}
+
+// Explanations are stored in Anki's media folder as one JSON file ({noteId: html}),
+// so they sync with AnkiWeb without changing any note type.
+async function loadExplanations() {
+  try {
+    const b64 = await anki('retrieveMediaFile', { filename: '_flowcards_explanations.json' }, 30000);
+    if (!b64) return {};
+    const bytes = Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0));
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch { return {}; }
 }
 
 async function flush(all) {
@@ -196,7 +227,8 @@ async function sync(refetch = true, all = false) {
 function setStatus() {
   const el = $('#status'), t = el.querySelector('span');
   el.className = 'pill ' + (syncing ? 'busy' : queue.length ? 'pending' : online || cfg.demo ? 'ok' : '');
-  t.textContent = cfg.demo ? 'demo' : syncing ? 'syncing' : queue.length ? `${queue.length} to sync` : online ? `${deck.length} left` : (cfg.url ? `offline · ${deck.length} left` : 'set up');
+  const left = view().length, pre = cfg.topic ? topicName(cfg.topic) + ' · ' : '';
+  t.textContent = cfg.demo ? pre + 'demo' : syncing ? 'syncing' : queue.length ? `${queue.length} to sync` : online ? `${pre}${left} left` : (cfg.url ? `offline · ${pre}${left} left` : 'set up');
 }
 
 /* ---------- rendering ---------- */
@@ -205,10 +237,14 @@ function makeCard(c, isNext) {
   el.className = 'card' + (isNext ? ' next' : '');
   el.innerHTML = `<div class="lbl"></div>
     <div class="body"><div class="q"></div><div class="a"></div></div>
+    <button class="exb" type="button" hidden>Explain</button>
     <div class="foot"><span class="tag"></span><span class="iv"></span></div><div class="tint"></div>`;
   el.querySelector('.q').innerHTML = c.q;
   el.querySelector('.a').innerHTML = c.a;
-  el.querySelector('.tag').textContent = (c.deck || '').split('::').pop() + (c.isNew ? ' · new' : c.learn ? ' · learning' : '');
+  el.querySelector('.tag').textContent = (c.topic ? topicName(c.topic) : (c.deck || '').split('::').pop()) + (c.isNew ? ' · new' : c.learn ? ' · learning' : '');
+  const b = el.querySelector('.exb');
+  b.addEventListener('pointerdown', (e) => e.stopPropagation());
+  b.addEventListener('click', (e) => { e.stopPropagation(); openExplain(c); });
   return el;
 }
 
@@ -222,13 +258,15 @@ function fit(el) { // shrink text until it fits, then allow internal scrolling
 
 function render(force) {
   const stage = $('#stage');
-  if (force || !cur) { cur = deck[0] || null; }
+  const v = view();
+  if (force || !cur) { cur = v[0] || null; }
   stage.innerHTML = '';
   curEl = nextEl = null;
   $('#done').hidden = !!cur;
   heat();
   if (!cur) { showCombo(); showDone(); updateBar(); setStatus(); return; }
-  if (deck[1]) { nextEl = makeCard(deck[1], true); stage.appendChild(nextEl); }
+  const nx = v.find((c) => c !== cur);
+  if (nx) { nextEl = makeCard(nx, true); stage.appendChild(nextEl); }
   curEl = makeCard(cur, false); stage.appendChild(curEl);
   fit(curEl);
   $('#hint').hidden = LS.get('hinted', false);
@@ -241,6 +279,9 @@ function updateBar() {
 }
 
 function showDone() {
+  const others = cfg.topic ? deck.length : 0;
+  $('#refresh').textContent = others ? 'Show all topics' : 'Check for more';
+  if (others) { $('#doneStats').textContent = `No ${topicName(cfg.topic)} cards left · ${others} in other topics`; return; }
   $('#doneStats').textContent = stats.reviewed
     ? `${stats.reviewed} reviewed today · ${Math.round((stats.correct / stats.reviewed) * 100)}% recalled · best combo ×${stats.best}`
     : (cfg.url || cfg.demo ? 'Nothing due right now.' : 'Connect to AnkiConnect in settings to start.');
@@ -252,12 +293,55 @@ function reveal() {
   if (!curEl || curEl.classList.contains('revealed')) return;
   curEl.classList.add('revealed', 'flip');
   setTimeout(() => curEl && curEl.classList.remove('flip'), 340);
-  fit(curEl);
-  if (cur.next && cur.next.length === 4) curEl.querySelector('.iv').textContent = `good · ${cur.next[2]}`;
+  revealedUI(curEl, cur);
   const r = curEl.getBoundingClientRect();
   FX.ring(r.left + r.width / 2, r.top + r.height / 2, 26, 'rgba(255,255,255,.9)');
   haptic(1); SFX.reveal();
 }
+
+function revealedUI(el, c) {
+  fit(el);
+  if (c.next && c.next.length === 4) el.querySelector('.iv').textContent = `good · ${c.next[2]}`;
+  if (c.ex) el.querySelector('.exb').hidden = false;
+}
+
+/* ---------- explanation sheet ---------- */
+function openExplain(c) {
+  if (!c || !c.ex) return;
+  $('#exBody').innerHTML = c.ex;
+  $('#exTopic').textContent = c.topic ? topicName(c.topic) : '';
+  $('#ex').hidden = false; $('#exPanel').scrollTop = 0;
+  haptic(1); SFX.tick();
+}
+const closeExplain = () => { $('#ex').hidden = true; };
+$('#ex .scrim').onclick = closeExplain;
+$('#exClose').onclick = closeExplain;
+
+/* ---------- topic picker ---------- */
+function openTopics() {
+  const counts = {};
+  for (const c of deck) if (c.topic) counts[c.topic] = (counts[c.topic] || 0) + 1;
+  const list = [['', 'All topics', deck.length], ...Object.keys(TOPICS).filter((t) => counts[t]).map((t) => [t, TOPICS[t], counts[t]])];
+  for (const t of Object.keys(counts)) if (!TOPICS[t]) list.push([t, t, counts[t]]);
+  const box = $('#topicList'); box.innerHTML = '';
+  for (const [t, name, n] of list) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'chip' + ((cfg.topic || '') === t ? ' on' : '');
+    b.innerHTML = '<span></span><b></b>';
+    b.firstChild.textContent = name; b.lastChild.textContent = n;
+    b.onclick = () => setTopic(t);
+    box.appendChild(b);
+  }
+  if (list.length === 1) box.insertAdjacentHTML('beforeend', '<p class="muted">Topics appear once your cards have Topic:: tags.</p>');
+  $('#topics').hidden = false;
+}
+function setTopic(t) {
+  cfg.topic = t; saveCfg();
+  $('#topics').hidden = true;
+  cur = null; render(true); haptic(1);
+}
+$('#topicBtn').onclick = openTopics;
+$('#topics .scrim').onclick = () => { $('#topics').hidden = true; };
 
 let uidSeq = Date.now();
 function answer(ease, dir, px, py) {
@@ -265,14 +349,15 @@ function answer(ease, dir, px, py) {
   const card = cur, el = curEl;
   const h = { uid: ++uidSeq, card: { ...card }, ease, dir, combo, doneCount, stats: { ...stats }, reinserted: null };
   if (!cfg.demo) queue.push({ uid: h.uid, cardId: card.id, ease, t: Date.now() });
-  deck.shift();
+  const at = deck.indexOf(card); deck.splice(at < 0 ? 0 : at, 1);
+  closeExplain();
 
   // Mimic Anki's same-day learning steps so the whole day works offline.
   const learning = card.isNew || card.learn;
   let again = null;
   if (ease === 1) again = { ...card, learn: true, seen: 0, next: null, isNew: false };
   else if (learning && ease < 4 && (card.seen || 0) < 1) again = { ...card, seen: (card.seen || 0) + 1, next: null };
-  if (again) { deck.splice(Math.min(deck.length, ease === 1 ? 4 : 8), 0, again); h.reinserted = again; }
+  if (again) { deck.splice(posAfter(ease === 1 ? 4 : 8), 0, again); h.reinserted = again; }
   else doneCount++;
 
   stats.reviewed++; if (ease > 1) stats.correct++;
@@ -395,8 +480,7 @@ function undo() {
   render(true);
   // fly back in from where it left, already flipped
   if (curEl) {
-    curEl.classList.add('revealed'); fit(curEl);
-    if (cur.next && cur.next.length === 4) curEl.querySelector('.iv').textContent = `good · ${cur.next[2]}`;
+    curEl.classList.add('revealed'); revealedUI(curEl, cur);
     const off = OFF(h.dir);
     curEl.style.transition = 'none';
     curEl.style.transform = `translate(${off[0]}px, ${off[1]}px) rotate(${off[2]}deg)`;
@@ -415,7 +499,7 @@ const stage = $('#stage');
 
 stage.addEventListener('pointerdown', (e) => {
   SFX.unlock();
-  if (!curEl || !$('#sheet').hidden) return;
+  if (!curEl || !$('#sheet').hidden || !$('#ex').hidden || !$('#topics').hidden) return;
   const body = curEl.querySelector('.body');
   drag = { x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, t0: performance.now(), mode: null, armed: false,
     body, samples: [[e.clientX, e.clientY, performance.now()]] };
@@ -494,7 +578,9 @@ function dirOf(dx, dy) {
 
 // keyboard (desktop testing): space flips, arrows grade, z / backspace undoes
 addEventListener('keydown', (e) => {
-  if (!$('#sheet').hidden) return;
+  if (!$('#ex').hidden) { if (e.key === 'Escape' || e.key === 'e') closeExplain(); return; }
+  if (!$('#sheet').hidden || !$('#topics').hidden) return;
+  if (e.key === 'e' && cur && curEl && curEl.classList.contains('revealed')) return openExplain(cur);
   if (e.key === 'z' || e.key === 'Backspace') { e.preventDefault(); return undo(); }
   if (!curEl) return;
   const map = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' };
@@ -725,32 +811,32 @@ $('#sSave').onclick = async () => {
 };
 $('#sDemo').onclick = () => {
   cfg.demo = true; saveCfg();
-  deck = DEMO.map((c, i) => ({ ...c, id: i + 1, deck: 'Demo', isNew: false, next: ['1m', '2d', '4d', '9d'] }));
+  deck = DEMO.map((c, i) => ({ topic: null, ex: null, ...c, id: i + 1, deck: 'Demo', isNew: false, next: ['1m', '2d', '4d', '9d'] }));
   queue = []; history = []; cur = null; doneCount = 0; combo = 0; total = deck.length; online = false; showDone.shown = false;
   closeSheet(); render(true); showCombo(); updateUndo();
 };
-$('#refresh').onclick = () => cfg.demo ? $('#sDemo').onclick() : sync(true, true);
+$('#refresh').onclick = () => (cfg.topic && deck.length) ? setTopic('') : cfg.demo ? $('#sDemo').onclick() : sync(true, true);
 
 const DEMO = [
-  { q: 'Capital of Australia?', a: 'Canberra' },
-  { q: 'Big-O of binary search?', a: '<b>O(log n)</b>' },
-  { q: 'Who proposed the multi-store model of memory?', a: 'Atkinson &amp; Shiffrin (1968)' },
+  { q: 'Capital of Australia?', a: 'Canberra', topic: 'Geography' },
+  { q: 'Big-O of binary search?', a: '<b>O(log n)</b>', topic: 'C', ex: "<p>Each comparison <b>halves</b> the part of the array still in play: n → n/2 → n/4 → … → 1. The number of halvings is log₂ n.</p><p>For a million items that's about 20 steps.</p><p><b>Requirement:</b> the array must already be sorted.</p>" },
+  { q: 'Who proposed the multi-store model of memory?', a: 'Atkinson &amp; Shiffrin (1968)', topic: 'Psychology' },
   { q: 'H₂O is the chemical formula for…', a: 'Water' },
   { q: 'The powerhouse of the cell', a: 'Mitochondria' },
-  { q: 'Longest river in the world?', a: 'The Nile (≈6,650 km)<br><small>Amazon is close behind</small>' },
-  { q: 'What does HTTP stand for?', a: 'HyperText Transfer Protocol' },
-  { q: 'Capacity of short-term memory (Miller)?', a: '7 ± 2 items' },
-  { q: 'Derivative of sin(x)?', a: 'cos(x)' },
-  { q: 'Smallest prime number?', a: '2' },
-  { q: 'Capital of Canada?', a: 'Ottawa' },
-  { q: 'A stack is LIFO or FIFO?', a: 'LIFO — last in, first out' },
+  { q: 'Longest river in the world?', a: 'The Nile (≈6,650 km)<br><small>Amazon is close behind</small>', topic: 'Geography' },
+  { q: 'What does HTTP stand for?', a: 'HyperText Transfer Protocol', topic: 'SoftwareTools' },
+  { q: 'Capacity of short-term memory (Miller)?', a: '7 ± 2 items', topic: 'Psychology' },
+  { q: 'Derivative of sin(x)?', a: 'cos(x)', topic: 'Maths' },
+  { q: 'Smallest prime number?', a: '2', topic: 'Maths' },
+  { q: 'Capital of Canada?', a: 'Ottawa', topic: 'Geography' },
+  { q: 'A stack is LIFO or FIFO?', a: 'LIFO — last in, first out', topic: 'C', ex: '<p><b>LIFO</b>: last in, first out, like a stack of plates. You add to the top and take from the top.</p><p>A <b>queue</b> is the FIFO one, like a line at a shop.</p>' },
   { q: 'Speed of light (approx.)?', a: '3 × 10⁸ m/s' },
   { q: 'Who wrote "1984"?', a: 'George Orwell' },
-  { q: 'Binary for 10?', a: '1010' },
+  { q: 'Binary for 10?', a: '1010', topic: 'Architecture' },
   { q: 'Largest planet?', a: 'Jupiter' },
-  { q: 'Capital of Japan?', a: 'Tokyo' },
-  { q: 'What is a closure?', a: 'A function bundled with references to its surrounding scope' },
-  { q: 'Milgram studied…', a: 'Obedience to authority' },
+  { q: 'Capital of Japan?', a: 'Tokyo', topic: 'Geography' },
+  { q: 'What is a closure?', a: 'A function bundled with references to its surrounding scope', topic: 'Haskell' },
+  { q: 'Milgram studied…', a: 'Obedience to authority', topic: 'Psychology' },
   { q: 'Chemical symbol for gold?', a: 'Au' },
 ];
 

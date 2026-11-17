@@ -22,6 +22,9 @@
   <button id="status" class="pill" aria-label="Sync status"><i></i><span>—</span></button>
   <div id="combo" aria-live="polite"></div>
   <div class="right">
+  <button id="topicBtn" class="icon" aria-label="Choose topic">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3 3 7.5l9 4.5 9-4.5z"/><path d="m3 12 9 4.5 9-4.5"/><path d="m3 16.5 9 4.5 9-4.5"/></svg>
+  </button>
   <button id="undo" class="icon" aria-label="Undo last answer">
     <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
   </button>
@@ -82,6 +85,25 @@
       <button id="sDemo" class="ghost" type="button">Try demo deck</button>
     </div>
   </form>
+</div>
+
+<div id="ex" hidden>
+  <div class="scrim"></div>
+  <div class="panel" id="exPanel">
+    <div class="grab"></div>
+    <div class="head"><div><small id="exTopic"></small><h2>Explanation</h2></div><button id="exClose" class="icon" type="button" aria-label="Close explanation">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+    <div id="exBody"></div>
+  </div>
+</div>
+
+<div id="topics" hidden>
+  <div class="scrim"></div>
+  <div class="panel">
+    <div class="grab"></div>
+    <h2>Topic</h2>
+    <div id="topicList"></div>
+  </div>
 </div>
 
 <label id="hap" aria-hidden="true"><input type="checkbox" switch></label>

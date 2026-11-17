@@ -13,6 +13,11 @@ A swipe-through Anki reviewer you can add to your iPhone home screen. It reads y
 
 As you drag, the card shows the grade and the next interval Anki would give it. A streak of correct answers builds a combo (×N), and bigger combos give bigger particle bursts. Every 10 in a row sets off confetti.
 
+## Explanations and topics
+- Once you've flipped a card, an **Explain** button appears if that card has an explanation. Tap it to open the explanation in a sheet.
+- Explanations are stored in Anki's media folder as `_flowcards_explanations.json`, keyed by note ID. They sync with AnkiWeb like any other media, and no note type is changed.
+- Each note has a `Topic::` tag (Architecture, Haskell, C, SoftwareTools, Maths, Psychology, Geography). Tap the layers icon in the top right to review one topic at a time. The filter works offline on the cards already downloaded.
+
 ## All-day offline
 Open the app once in the morning while the Mac is on, and it downloads the whole day's cards, including learning cards due later. After that you can review all day with the Mac closed. Cards you get wrong, and new or learning cards, come back later in the session the way Anki's learning steps would. Answers are kept on the phone and sent the next time Anki can be reached. Anki then schedules them as of that moment, so intervals can be off by about a day.
 
