@@ -1,58 +1,163 @@
 # Flow Cards
 
-A swipe-through Anki reviewer you can add to your iPhone home screen. It reads your due cards from **AnkiConnect**, works offline, and writes every answer back to Anki's scheduler, so your progress stays in Anki.
+A swipe-through reviewer for your [Anki](https://apps.ankiweb.net) cards that runs in any modern browser and installs like an app on iPhone, Android, Windows, macOS and Linux.
+
+It reads your due cards from Anki desktop through the **AnkiConnect** add-on and works offline once the day's cards are downloaded. Every answer is written back to Anki's real scheduler, so your progress stays in Anki and syncs to AnkiWeb, AnkiMobile and AnkiDroid as usual.
+
+**Use it here:** <https://milo-griffiths.github.io/AddictiveFlashcards/>. You don't need to install or build anything, or have an account. The page only ever talks to *your own* Anki.
 
 | Gesture | Action |
 |---|---|
 | Tap, or swipe ↑ | Flip the card |
 | Swipe ↑ | Good |
 | Swipe → | Easy |
-| Swipe ← | Again (the card comes back in a few cards) |
+| Swipe ← | Again (the card comes back after its learning step) |
 | Swipe ↓ | Hard |
 | ↶ (top right) | Undo the last answer(s), up to ~12 s after each swipe |
 
-As you drag, the card shows the grade and the next interval Anki would give it. A streak of correct answers builds a combo (×N), and bigger combos give bigger particle bursts. Every 10 in a row sets off confetti.
+On a computer you can use the keyboard: **Space** flips, **arrow keys** grade, **Z** or **Backspace** undoes, and **E** opens the explanation.
 
-## Explanations and topics
-- Once you've flipped a card, an **Explain** button appears if that card has an explanation. Tap it to open the explanation in a sheet.
-- Explanations are stored in Anki's media folder as `_flowcards_explanations.json`, keyed by note ID. They sync with AnkiWeb like any other media, and no note type is changed.
-- Each note has a `Topic::` tag (Architecture, Haskell, C, SoftwareTools, Maths, Psychology, Geography). Tap the layers icon in the top right to review one topic at a time. The filter works offline on the cards already downloaded.
+As you drag, the card shows the grade and the next interval Anki would give it. A streak of correct answers builds a combo (×N) with bigger particle bursts, and every 10 in a row sets off confetti.
 
-## All-day offline
-Open the app once in the morning while the Mac is on, and it downloads the whole day's cards, including learning cards due later. After that you can review all day with the Mac closed. Cards you get wrong, and new or learning cards, come back after their real Anki step delay (from your deck options, e.g. 1 min then 10 min). If nothing else is left, they can come up to 20 minutes early, the same as Anki's "learn ahead". Answers are kept on the phone and sent the next time Anki can be reached. Anki then schedules them as of that moment, so intervals can be off by about a day.
+---
 
-## How sync works
+## What you need
 
-1. When it opens, the app asks AnkiConnect for today's due and new cards (within Anki's own daily limits), with images inlined. It caches them on the phone.
-2. Each swipe is queued and sent with `answerCards`, which runs Anki's real scheduler, about 12 seconds later (so you can still undo it). If Anki can't be reached, answers wait in the queue and go up the next time it can.
-3. After pushing answers, the app can also ask Anki desktop to sync with AnkiWeb, so AnkiMobile and AnkiDroid pick up the changes too.
+- **Anki desktop** on a Windows, macOS or Linux computer, with the **AnkiConnect** add-on. Anki must be open whenever you want to download cards or send answers. In between, you can review offline.
+- A **browser** on the device you'll review on: Safari, Chrome, Edge or Firefox.
+- To review on a **phone, tablet or another computer**, you also need [Tailscale](https://tailscale.com) (free), so that device can reach Anki securely. See step 2.
 
-The dot in the top left shows the state: green means synced, amber means answers are waiting, and grey means offline. Tap the dot to force a sync.
+There's a **demo deck** in settings (⚙︎ → *Try demo deck*) if you just want to see how it feels first.
+
+---
 
 ## Setup
 
-### 1. AnkiConnect (on the Mac)
-In Anki: Tools → Add-ons → AnkiConnect → Config. Make sure the GitHub Pages origin is allowed:
+### 1. Install AnkiConnect and allow the app
+
+1. In Anki: **Tools → Add-ons → Get Add-ons…**, enter code **`2055492159`**, then restart Anki.
+2. **Tools → Add-ons →** select *AnkiConnect* **→ Config**. Add the address you'll open the app from to `webCorsOriginList`. For the hosted version:
+
+   ```json
+   "webCorsOriginList": ["http://localhost", "https://milo-griffiths.github.io"]
+   ```
+
+   The entry is the site's *origin*: scheme, host and port, with no path. If you run your own copy (option B below) or your own fork, add that origin instead, e.g. `"http://localhost:8000"` or `"https://yourname.github.io"`. The port must match exactly.
+3. Click **OK** and **restart Anki** so the change takes effect.
+
+### 2. Connect the app to Anki
+
+Pick whichever fits how you want to review.
+
+#### A. On the same computer as Anki (simplest)
+
+Open the hosted app in your browser, then open settings (⚙︎) and set **AnkiConnect URL** to `http://localhost:8765`. Choose **Save & sync**.
+
+Most browsers allow an https page to talk to `localhost`. Some ask you to allow access to devices on your local network, which you should allow. If it still says it can't reach Anki, use option B, which always works.
+
+#### B. Run your own copy on the computer (works everywhere, offline-friendly)
+
+The app is plain HTML, CSS and JavaScript with no build step, so any static file server works.
+
+1. Download this repository (green **Code** button → **Download ZIP**, then unzip), or run `git clone https://github.com/Milo-Griffiths/AddictiveFlashcards.git`.
+2. In a terminal, go into the folder and start a server:
+
+   ```bash
+   python3 -m http.server 8000
+   ```
+
+   On Windows, use `py -m http.server 8000`, or `python -m http.server 8000` (get Python from [python.org](https://www.python.org) or the Microsoft Store). With Node.js installed, `npx serve -l 8000` also works.
+3. Add `"http://localhost:8000"` to `webCorsOriginList` (step 1) and restart Anki.
+4. Open <http://localhost:8000> and set the AnkiConnect URL to `http://localhost:8765`.
+
+#### C. On a phone, tablet or another computer (via Tailscale)
+
+The hosted app uses HTTPS, so phones won't let it call a plain `http://192.168…` address. [Tailscale](https://tailscale.com) gives the computer running Anki a private HTTPS address that only your own devices can reach, from anywhere, not just home Wi-Fi.
+
+1. Install Tailscale on **the computer running Anki** and on **your phone** (App Store or Google Play), and sign in to the same account on both.
+2. In the [Tailscale admin console → DNS](https://login.tailscale.com/admin/dns), make sure **MagicDNS** is on and **enable HTTPS certificates**.
+3. On the Anki computer, open a terminal and run:
+
+   | OS | Command |
+   |---|---|
+   | macOS | `tailscale serve --bg 8765`. If `tailscale` isn't found (App Store version), use `/Applications/Tailscale.app/Contents/MacOS/Tailscale serve --bg 8765` |
+   | Windows | `tailscale serve --bg 8765` in PowerShell or Command Prompt |
+   | Linux | `sudo tailscale serve --bg 8765` |
+
+   It prints an address like `https://my-computer.tailXXXX.ts.net`. That address only works for devices on your Tailscale account.
+4. On the phone, open the app, go to settings (⚙︎), paste that address as the **AnkiConnect URL**, and choose **Save & sync**.
+
+To stop sharing later, run `tailscale serve --https=443 off` (or `tailscale serve reset`).
+
+> **Security:** `tailscale serve` is private to your own devices. Never expose AnkiConnect to the public internet (for example with `tailscale funnel` or port forwarding) unless you also set an `apiKey` in the AnkiConnect config and enter the same key in the app's settings. Otherwise anyone could read and edit your collection.
+
+### 3. Install it like an app (optional)
+
+| Device | How |
+|---|---|
+| iPhone / iPad | Open the app in **Safari** → Share → **Add to Home Screen** |
+| Android | Open it in **Chrome** → ⋮ menu → **Add to Home screen** / **Install app** |
+| Windows, macOS, Linux | In **Chrome** or **Edge**, click the install icon in the address bar (or ⋮ → *Install Flow Cards*). Firefox and Safari on desktop just use it as a normal tab. |
+
+Installed, it opens full-screen and keeps working offline.
+
+---
+
+## Settings
+
+| Setting | What it does |
+|---|---|
+| AnkiConnect URL / API key | Where your Anki is (see step 2). The key is only needed if you set `apiKey` in AnkiConnect. |
+| Deck | Review one deck, or all decks. |
+| New cards / Review cap | Upper limits for the day. Anki's own daily limits from your deck options also apply. |
+| Sync Anki to AnkiWeb after reviews | After sending answers, ask Anki desktop to sync with AnkiWeb so your other devices see them. |
+| Sound / Haptics | Haptics need Android, or iOS 18+. |
+| Show the explanation automatically | After Hard or Again (default), after Again only, or never. |
+
+## All-day offline
+
+Open the app once while Anki is reachable, and it downloads the whole day's cards, including learning cards due later. After that you can review with the computer closed. Cards you get wrong, and new or learning cards, come back after their real Anki step delay (from your deck options, e.g. 1 min then 10 min). If nothing else is left, they can come up to 20 minutes early, like Anki's "learn ahead". Answers wait on the device and are sent the next time Anki can be reached. Anki schedules them as of that moment, so intervals can be off by about a day.
+
+The dot in the top left shows the state: **green** synced, **amber** answers waiting, **grey** offline. Tap it to force a sync.
+
+## Topics and practice mode
+
+- **Topics** come from note tags of the form `Topic::Name` (e.g. `Topic::Biology`). Tap the layers icon (top right) to review one topic at a time. Notes without a topic tag still appear under *All topics*.
+- **Practice:** layers icon → **Practice**. Pick one or more topics and how many cards (20, 50, 100 or all), optionally including cards you haven't studied yet. You get a shuffled set, whether or not they're due. **Nothing from practice is sent to Anki**, and today's review stats aren't touched. Again brings a card back a few cards later, Hard a little later. Your review session is parked and comes back exactly as it was when you tap *End practice*. Practised cards are kept on the device, so you can practise them offline later.
+
+## Explanations (optional)
+
+Each card can have a short explanation that appears behind an **Explain** button after you flip it, and opens by itself after Hard or Again. Explanations live in **one JSON file in Anki's media folder**, so they sync through AnkiWeb with your collection, and you don't need to change any note type or field:
+
+- File name: `_flowcards_explanations.json` (the leading underscore stops Anki's *Check Media* from deleting it).
+- Contents: an object mapping **note IDs** (as strings) to an HTML snippet. Simple tags work best: `<p> <b> <i> <code> <pre> <ul> <ol> <li> <table> <tr> <th> <td>`. The HTML is shown as-is, so only use explanation files you wrote or trust.
 
 ```json
-"webCorsOriginList": ["http://localhost", "https://milo-griffiths.github.io"]
+{
+  "1700000000000": "<p>Each comparison <b>halves</b> the search range, so it takes about log₂ n steps.</p>"
+}
 ```
 
-Anki has to be running for the phone to sync. Reviews you do while it's closed are kept on the phone and sent later.
+You can find a note's ID in Anki's browser: select a card and open **Card Info** (Ctrl+Shift+I, or Cmd+Shift+I on a Mac). AnkiConnect's `findNotes` action also returns them. To store the file, put it in your profile's `collection.media` folder (Tools → *Check Media* → *View Files* opens it), or send it with AnkiConnect's `storeMediaFile` action. The app picks it up on its next full sync.
 
-### 2. Reach the Mac from the iPhone over HTTPS
-The app is served over HTTPS, so iOS blocks it from calling a plain `http://192.168…` address. The simplest fix is [Tailscale](https://tailscale.com), which is free:
+**Bad explanation?** At the bottom of the explanation sheet, this tags the note `FlowCards::BadExplanation` in Anki, so you can find ones to rewrite with the search `tag:FlowCards::BadExplanation`. Tap again to remove the flag.
 
-```bash
-tailscale serve --bg 8765
-```
+**Code formatting:** multi-line `<code>` on cards becomes a left-aligned code block, and `` `backticks` `` in card text become inline code. Cards tagged `Topic::C` or `Topic::Haskell` also get syntax colouring.
 
-This gives you a URL like `https://your-mac.tailXXXX.ts.net`. Install Tailscale on the iPhone too, then paste that URL into the app's settings (⚙︎). It works from anywhere, not just on home Wi-Fi.
+## Troubleshooting
 
-If you ever expose the Mac beyond your own tailnet (for example with `tailscale funnel`), set an `apiKey` in the AnkiConnect config and enter the same key in the app.
+| Message or symptom | Fix |
+|---|---|
+| *Can't reach Anki right now* | Is Anki open? Is the URL right? On a phone, check Tailscale is connected on both devices, and that `tailscale serve` is still running (`tailscale serve status`). |
+| Works on the computer but not the phone | `localhost` on a phone means the phone itself. Use the Tailscale `https://….ts.net` address. |
+| *iOS blocks plain http from an https page* | Use an `https://` address (Tailscale, option C) or run your own copy (option B). |
+| Browser console says *blocked by CORS policy* | The app's origin isn't in `webCorsOriginList`, or Anki wasn't restarted. The origin must match exactly, port included. |
+| An old version keeps loading | Close the app fully and reopen it, twice if needed. It checks for updates on launch. |
 
-### 3. Add to the home screen
-Open `https://milo-griffiths.github.io/AddictiveFlashcards/` in Safari → Share → **Add to Home Screen**.
+## Privacy
+
+There's no server, account or analytics. The page is static files. Your cards and answers travel only between your browser and your own AnkiConnect, and they're cached in the browser's local storage on your device.
 
 ## Files
-`index.html`, `style.css`, `app.js` (all the logic), `sw.js` (offline cache), `manifest.webmanifest`, and `icons/`. There's no build step.
+
+`index.html`, `style.css`, `app.js` (all the logic), `sw.js` (offline cache), `manifest.webmanifest`, and `icons/`. There's no build step. To host your own copy on GitHub Pages: fork the repo, then **Settings → Pages → Deploy from a branch → `main` / root**, and add your Pages origin to `webCorsOriginList`.
