@@ -463,7 +463,7 @@ const FX = (() => {
 
 /* ---------- settings ---------- */
 function openSheet(msg, cls) {
-  $('#sUrl').value = cfg.url || 'http://localhost:8765';
+  $('#sUrl').value = cfg.url || (/iPhone|iPad|Android/.test(navigator.userAgent) ? '' : 'http://localhost:8765');
   $('#sKey').value = cfg.key; $('#sNew').value = cfg.newLimit; $('#sRev').value = cfg.revLimit;
   $('#sWeb').checked = cfg.ankiweb; $('#sSound').checked = cfg.sound;
   const m = $('#sMsg'); m.textContent = msg || ''; m.className = cls || '';
@@ -506,6 +506,8 @@ $('#sSave').onclick = async () => {
     m.className = 'err';
     m.textContent = location.protocol === 'https:' && url.startsWith('http:') && !/localhost|127\.0\.0\.1/.test(url)
       ? 'iOS blocks plain http from an https page. Use an https URL (e.g. Tailscale Serve).'
+      : /localhost|127\.0\.0\.1/.test(url) && /iPhone|iPad|Android/.test(navigator.userAgent)
+      ? 'localhost means this phone, not your Mac. Use your Tailscale https://….ts.net address.'
       : `Couldn't reach AnkiConnect: ${e.message || e}. Is Anki open and is this origin in webCorsOriginList?`;
   }
 };
