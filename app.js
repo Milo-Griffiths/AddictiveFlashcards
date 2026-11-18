@@ -40,7 +40,7 @@ const IDB = (() => {
 
 const cfg = Object.assign(
   { url: '', key: '', deck: '', newLimit: 20, revLimit: 300, ankiweb: true, sound: true, haptics: true, demo: false, topic: '',
-    autoEx: 'hard', exSkipRead: true, pTopics: [], pSize: 50, pNew: false, pMode: 'random' },
+    autoEx: 'hard', exSkipRead: true, pTopics: [], pSize: 50, pNew: false, pMode: 'random', mixNew: true },
   LS.get('cfg', {})
 );
 if (cfg.v !== 2) { cfg.sound = true; cfg.haptics = true; cfg.v = 2; }
@@ -134,6 +134,36 @@ async function inlineMedia(cards) {
   for (const c of cards) { c.q = sub(c.q); c.a = sub(c.a); }
 }
 
+// Today's new cards. Anki hands them out in the order they were added, so a deck imported topic by topic
+// gives you a whole day of one topic. With "Mix topics" on, deal them round-robin across Topic:: tags
+// instead (each topic still in its own added order), so the day's quota is spread over every topic.
+async function pickNew(scope, cap) {
+  if (cap <= 0) return [];
+  const base = `${scope} is:new -is:suspended -is:buried`;
+  const all = await anki('findCards', { query: base });
+  if (!cfg.mixNew || all.length <= cap) return all.slice(0, cap);
+  try {
+    const topics = (await anki('getTags', {}, 5000)).filter((t) => /^Topic::[^:]+$/.test(t));
+    if (topics.length < 2) return all.slice(0, cap);
+    const res = await anki('multi', { actions: topics.map((t) => ({ action: 'findCards', params: { query: `${base} tag:${q(t)}` } })) }, 15000);
+    const seen = new Set(), groups = [];
+    for (const r of res) {
+      const ids = r && (r.result !== undefined ? r.result : r);
+      if (!Array.isArray(ids)) continue;
+      const g = ids.filter((id) => !seen.has(id)); g.forEach((id) => seen.add(id));
+      if (g.length) groups.push(g);
+    }
+    const rest = all.filter((id) => !seen.has(id));          // cards with no topic make a group of their own
+    if (rest.length) groups.push(rest);
+    groups.sort((a, b) => a[0] - b[0]);                       // stable: topics you added first go first
+    const out = [];
+    for (let i = 0; out.length < cap && groups.some((g) => i < g.length); i++) {
+      for (const g of groups) if (i < g.length && out.length < cap) out.push(g[i]);
+    }
+    return out;
+  } catch { return all.slice(0, cap); }
+}
+
 async function fetchDeck() {
   const decks = await anki('deckNames');
   LS.set('decks', decks);
@@ -148,9 +178,9 @@ async function fetchDeck() {
   const [due, learn, fresh] = await Promise.all([
     anki('findCards', { query: `${scope} is:due -is:suspended -is:buried` }),
     anki('findCards', { query: `${scope} is:learn -is:due -is:suspended -is:buried` }), // learning cards due later today
-    newCap > 0 ? anki('findCards', { query: `${scope} is:new -is:suspended -is:buried` }) : [],
+    pickNew(scope, newCap),
   ]);
-  const ids = [...new Set([...due.slice(0, Math.max(revCap, 0)), ...learn, ...fresh.slice(0, newCap)])];
+  const ids = [...new Set([...due.slice(0, Math.max(revCap, 0)), ...learn, ...fresh])];
   const info = await cardsInfo(ids);
   exAll = await loadExplanations();
   IDB.set('ex', exAll);
@@ -575,7 +605,7 @@ function showTab(tab) {
   for (const b of $('#tabs').children) b.classList.toggle('on', b.dataset.tab === tab);
   $('#reviewPick').hidden = tab !== 'review'; $('#practicePick').hidden = tab !== 'practice';
 }
-for (const b of $('#tabs').children) b.onclick = () => { showTab(b.dataset.tab); haptic(1); };
+for (const b of $('#tabs').children) b.onclick = () => { showTab(b.dataset.tab); haptic(1); SFX.pick(); };
 function openTopics() {
   $('#tabs').hidden = !!practice;
   if (practice) $('#reviewPick').hidden = $('#practicePick').hidden = true;
@@ -608,9 +638,9 @@ function openTopics() {
 function setTopic(t) {
   cfg.topic = t; saveCfg();
   $('#topics').hidden = true;
-  cur = null; render(true); haptic(1);
+  cur = null; render(true); haptic(1); SFX.pick();
 }
-$('#topicBtn').onclick = openTopics;
+$('#topicBtn').onclick = () => { openTopics(); SFX.open(); };
 $('#topics .scrim').onclick = () => { $('#topics').hidden = true; SFX.close(); };
 
 /* ---------- practice mode ---------- */
@@ -661,7 +691,7 @@ function updateStartLabel() {
   const n = cfg.pSize ? String(cfg.pSize) : 'all';
   $('#pStart').textContent = `Start · ${n} ${hardMode() ? 'hardest' : 'random'} from ${picked.length ? picked.map(topicName).join(', ') : 'all topics'}`;
 }
-for (const b of $('#pMode').children) b.onclick = () => { cfg.pMode = b.dataset.mode; saveCfg(); drawMode(); refreshPracticeCounts(); haptic(1); };
+for (const b of $('#pMode').children) b.onclick = () => { cfg.pMode = b.dataset.mode; saveCfg(); drawMode(); refreshPracticeCounts(); haptic(1); SFX.pick(); };
 let drawnTopics = [];
 function drawPracticeTopics(list, counts) {
   const box = $('#pTopics'); box.innerHTML = '';
@@ -673,7 +703,7 @@ function drawPracticeTopics(list, counts) {
     b.firstChild.textContent = topicName(t); b.lastChild.textContent = counts[t] ?? '';
     b.onclick = () => {
       cfg.pTopics = cfg.pTopics.includes(t) ? cfg.pTopics.filter((x) => x !== t) : [...cfg.pTopics, t];
-      saveCfg(); b.classList.toggle('on'); updateStartLabel(); haptic(1);
+      saveCfg(); b.classList.toggle('on'); updateStartLabel(); haptic(1); SFX.pick(b.classList.contains('on'));
     };
     box.appendChild(b);
   }
@@ -696,9 +726,9 @@ async function refreshPracticeCounts() {
 for (const b of $('#pSize').children) b.onclick = () => {
   cfg.pSize = +b.dataset.n; saveCfg();
   for (const x of $('#pSize').children) x.classList.toggle('on', x === b);
-  updateStartLabel(); haptic(1);
+  updateStartLabel(); haptic(1); SFX.pick();
 };
-$('#pNew').onchange = (e) => { cfg.pNew = e.target.checked; saveCfg(); refreshPracticeCounts(); };
+$('#pNew').onchange = (e) => { cfg.pNew = e.target.checked; saveCfg(); refreshPracticeCounts(); SFX.pick(e.target.checked); };
 
 async function loadPracticeCards(topics) {
   const want = cfg.pSize || Infinity;
@@ -756,7 +786,7 @@ async function startPractice(topics) {
   deck = cards; doneCount = 0; total = cards.length; combo = 0; history = []; cur = null;
   document.body.classList.add('practice');
   $('#topics').hidden = true;
-  render(true); showCombo(); updateUndo(); haptic(2);
+  render(true); showCombo(); updateUndo(); haptic(2); SFX.open();
 }
 function endPractice() {
   if (!practice) return;
@@ -1139,6 +1169,8 @@ const SFX = (() => {
     tick() { tone(900, { dur: 0.03, vol: 0.06 }); },
     // panels: a soft rising "bloop" in, the same falling out
     open() { tone(520, { dur: 0.1, vol: 0.09, to: 760, attack: 0.008 }); tone(1040, { dur: 0.06, vol: 0.02, t: 0.03 }); },
+    // choosing a topic / chip / tab: a short pluck, higher when switching something on
+    pick(on = true) { tone(on ? 880 : 660, { dur: 0.07, type: 'triangle', vol: 0.11 }); tone(on ? 1320 : 990, { dur: 0.04, vol: 0.03, t: 0.012 }); },
     close() { tone(700, { dur: 0.1, vol: 0.09, to: 440, attack: 0.008 }); tone(350, { dur: 0.08, vol: 0.04, t: 0.02 }); },
     reveal() { tone(440, { dur: 0.09, vol: 0.12, to: 587 }); },
     good(ease, c) {
@@ -1289,6 +1321,7 @@ function openSheet(msg, cls) {
   $('#sUrl').value = cfg.url || (MOBILE ? '' : 'http://localhost:8765');
   $('#sKey').value = cfg.key; $('#sNew').value = cfg.newLimit; $('#sRev').value = cfg.revLimit;
   $('#sWeb').checked = cfg.ankiweb; $('#sSound').checked = cfg.sound; $('#sHap').checked = cfg.haptics;
+  $('#sMix').checked = cfg.mixNew !== false;
   $('#sAutoEx').value = cfg.autoEx; $('#sSkipRead').checked = cfg.exSkipRead;
   $('#sSkipRow').hidden = cfg.autoEx === 'off';
   const m = $('#sMsg'); m.textContent = msg || ''; m.className = cls || '';
@@ -1302,11 +1335,13 @@ $('#status').onclick = () => sync(true, true);
 $('#sheet .scrim').onclick = () => { closeSheet(); SFX.close(); };
 $('#sClose').onclick = () => { closeSheet(); SFX.close(); };
 // instant-apply toggles, no connection needed
-$('#sSound').onchange = (e) => { cfg.sound = e.target.checked; saveCfg(); if (cfg.sound) SFX.good(3, 2); };
-$('#sHap').onchange = (e) => { cfg.haptics = e.target.checked; saveCfg(); haptic(1); };
-$('#sWeb').onchange = (e) => { cfg.ankiweb = e.target.checked; saveCfg(); };
-$('#sAutoEx').onchange = (e) => { cfg.autoEx = e.target.value; saveCfg(); $('#sSkipRow').hidden = cfg.autoEx === 'off'; };
-$('#sSkipRead').onchange = (e) => { cfg.exSkipRead = e.target.checked; saveCfg(); };
+$('#sSound').onchange = (e) => { cfg.sound = e.target.checked; saveCfg(); if (cfg.sound) SFX.pick(true); };
+$('#sHap').onchange = (e) => { cfg.haptics = e.target.checked; saveCfg(); haptic(1); SFX.pick(e.target.checked); };
+$('#sWeb').onchange = (e) => { cfg.ankiweb = e.target.checked; saveCfg(); SFX.pick(e.target.checked); };
+// re-pick today's new cards straight away (only possible while Anki is reachable)
+$('#sMix').onchange = (e) => { cfg.mixNew = e.target.checked; saveCfg(); SFX.pick(e.target.checked); sync(true); };
+$('#sAutoEx').onchange = (e) => { cfg.autoEx = e.target.value; saveCfg(); SFX.pick(); $('#sSkipRow').hidden = cfg.autoEx === 'off'; };
+$('#sSkipRead').onchange = (e) => { cfg.exSkipRead = e.target.checked; saveCfg(); SFX.pick(e.target.checked); };
 
 $('#sSave').onclick = async () => {
   const url = $('#sUrl').value.trim();
