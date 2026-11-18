@@ -129,7 +129,13 @@
   </div>
 </div>
 
-<div id="zoom" hidden><div class="inner"></div><p>Tap to close</p></div>
+<div id="zoom" hidden>
+  <div class="zscrim"></div>
+  <div class="zbox"></div>
+  <button class="zx icon" type="button" aria-label="Close image">
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+  <p class="zhint">Pinch or double-tap to zoom · swipe away to close</p>
+</div>
 
 <div id="topics" hidden>
   <div class="scrim"></div>
@@ -167,5 +173,6 @@
 <label id="hap" aria-hidden="true"><input type="checkbox" switch></label>
 <script src="app.js"></script>
 <script src="stats.js"></script>
+<script src="zoom.js"></script>
 </body>
 </html>

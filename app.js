@@ -504,7 +504,7 @@ function openExplain(c, auto) {
   $('#ex h2').textContent = c.ex ? 'Explanation' : 'Card';
   $('#exBad').hidden = !c.ex;
   formatCode($('#exBody'), lang, false);
-  for (const d of $('#exBody').querySelectorAll('svg')) d.onclick = () => openZoom(d);
+  for (const d of document.querySelectorAll('#exBody svg, #exBody img, #exCard img')) d.onclick = (e) => { e.stopPropagation(); Zoom.open(d); };
   $('#exTopic').textContent = c.topic ? topicName(c.topic) : '';
   updateBadBtn();
   const wasOpen = !$('#ex').hidden;
@@ -514,7 +514,7 @@ function openExplain(c, auto) {
 // `silent`: closed as a side effect (grading a card), which plays its own sound
 const closeExplain = (silent) => {
   const wasOpen = !$('#ex').hidden;
-  $('#ex').hidden = true; exCard = null; $('#zoom').hidden = true;
+  $('#ex').hidden = true; exCard = null; Zoom.close(true);
   if (wasOpen && silent !== true) { haptic(1); SFX.close(); }
 };
 
@@ -530,15 +530,6 @@ function safeHtml(html) {
   }
   return t.innerHTML;
 }
-// tap a diagram to see it bigger (scrolls if wider than the screen); tap again to close
-function openZoom(svg) {
-  const z = $('#zoom'), c = svg.cloneNode(true);
-  c.onclick = null;
-  z.querySelector('.inner').replaceChildren(c);
-  z.hidden = false; haptic(1); SFX.open();
-  z.scrollLeft = (z.scrollWidth - z.clientWidth) / 2;
-}
-$('#zoom').onclick = () => { $('#zoom').hidden = true; SFX.close(); };
 $('#exPanel').addEventListener('scroll', (e) => e.currentTarget.classList.toggle('scrolled', e.currentTarget.scrollTop > 4), { passive: true });
 $('#ex .scrim').onclick = closeExplain;
 $('#exClose').onclick = closeExplain;
@@ -1052,11 +1043,11 @@ const stage = $('#stage');
 
 stage.addEventListener('pointerdown', (e) => {
   SFX.unlock();
-  if (!curEl || !$('#sheet').hidden || !$('#ex').hidden || !$('#topics').hidden || !$('#stats').hidden) return;
+  if (!curEl || !$('#sheet').hidden || !$('#ex').hidden || !$('#topics').hidden || !$('#stats').hidden || Zoom.isOpen) return;
   if (e.clientY > curEl.getBoundingClientRect().bottom) return;   // the strip under the card is the iPhone's home bar
   const body = curEl.querySelector('.body');
   drag = { x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, t0: performance.now(), mode: null, armed: false,
-    body, samples: [[e.clientX, e.clientY, performance.now()]] };
+    body, img: curEl.classList.contains('revealed') ? e.target.closest('.body img') : null, samples: [[e.clientX, e.clientY, performance.now()]] };
   curEl.classList.remove('arrive');
   curEl.style.transition = 'none';
   stage.setPointerCapture(e.pointerId);
@@ -1122,7 +1113,7 @@ const endDrag = (e) => {
   };
   if (d.mode === 'scroll') return;
   if (!d.mode) { // tap
-    if (performance.now() - d.t0 < 400) reveal();
+    if (performance.now() - d.t0 < 400) { if (d.img) { reset(); return Zoom.open(d.img); } reveal(); }   // a revealed card's image: enlarge it
     return reset();
   }
   const dir = dirOf(dx, dy);
@@ -1141,6 +1132,7 @@ function dirOf(dx, dy) {
 
 // keyboard (desktop testing): space flips, arrows grade, z / backspace undoes
 addEventListener('keydown', (e) => {
+  if (Zoom.isOpen) { if (e.key === 'Escape' || e.key === ' ') { e.preventDefault(); Zoom.close(); } return; }
   if (!$('#ex').hidden) { if (e.key === 'Escape' || e.key === 'e') closeExplain(); return; }
   if (!$('#stats').hidden) { if (e.key === 'Escape') closeStats(); return; }
   if (!$('#sheet').hidden || !$('#topics').hidden) return;
@@ -1267,6 +1259,9 @@ const SFX = (() => {
       for (let j = 0; j < Math.min(2 + tier * 2, sparkle.length); j++) bell(C(sparkle[j]), { t: land + 0.06 + j * 0.09, dur: 0.6, vol: 0.06, send: 0.6 });
     },
     undo() { tone(700, { dur: 0.16, vol: 0.12, to: 350 }); },
+    // enlarging an image: an airy upward glide with a glint on top; putting it back: the same, falling to rest
+    zoomIn() { tone(392, { dur: 0.24, vol: 0.06, to: 784, attack: 0.03 }); bell(C(19), { t: 0.1, dur: 0.55, vol: 0.045, send: 0.55 }); },
+    zoomOut() { tone(740, { dur: 0.2, vol: 0.05, to: 370, attack: 0.01 }); tone(C(7), { t: 0.15, dur: 0.12, type: 'triangle', vol: 0.05 }); },
     // stats opening: a quick, quiet run of glassy notes rising with the bars
     chart() { [0, 4, 7, 11, 14, 19].forEach((k, j) => bell(C(k + 12), { t: j * 0.05, dur: 0.45, vol: 0.035, send: 0.45 })); },
     // tapping a day: a tiny pluck, brighter the busier the day was (level 0..4)
