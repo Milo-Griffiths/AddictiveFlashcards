@@ -40,7 +40,7 @@ const IDB = (() => {
 
 const cfg = Object.assign(
   { url: '', key: '', deck: '', newLimit: 20, revLimit: 300, ankiweb: true, sound: true, haptics: true, demo: false, topic: '',
-    autoEx: 'hard', exSkipRead: true, pTopics: [], pSize: 50, pNew: false, pMode: 'random', mixNew: true },
+    autoEx: 'hard', exSkipRead: true, pTopics: [], pSize: 50, pNew: false, pMode: 'random', mixNew: true, exams: {} },
   LS.get('cfg', {})
 );
 if (cfg.v !== 2) { cfg.sound = true; cfg.haptics = true; cfg.v = 2; }
@@ -60,6 +60,10 @@ let total = 0, doneCount = 0, combo = 0;
 let online = false, syncing = false, lastFetch = 0, retryAt = 0;
 const today = () => new Date().toLocaleDateString('en-CA');
 let stats = LS.get('stats', {});
+let records = LS.get('records', {});
+// Anki logs 0 s for answers sent through AnkiConnect, so time spent here is kept on the phone instead:
+// {ankiDay: [ms, answers]}. Each answer counts the time the card was on screen, capped at 60 s like Anki.
+let appTime = LS.get('appTime', {}), shownAt = Date.now();   // all-time bests (best combo) and goals already celebrated
 if (stats.day !== today()) stats = { day: today(), reviewed: 0, best: 0, correct: 0 };
 const TOPICS = { Architecture: 'Architecture', Haskell: 'Haskell', C: 'C', SoftwareTools: 'Software Tools', Maths: 'Maths', Psychology: 'Psychology', Geography: 'Geography' };
 const topicName = (t) => TOPICS[t] || t;
@@ -134,13 +138,50 @@ async function inlineMedia(cards) {
   for (const c of cards) { c.q = sub(c.q); c.a = sub(c.a); }
 }
 
+/* ---------- exam dates ---------- */
+// Topics with an exam get enough new cards each day for every card to have been seen EXAM_BUFFER days
+// before it (so there's time left to review). Those cards come first and may go over the daily new limit.
+const EXAM_BUFFER = 5;
+const EXAM_MAX = 80;                                           // never more new cards than this per topic per day
+const daysUntil = (iso) => Math.round((new Date(iso + 'T12:00') - new Date(new Date().toLocaleDateString('en-CA') + 'T12:00')) / 864e5);
+function examPace(unseen, introducedToday, days) {
+  if (days < 0 || !(unseen + introducedToday)) return 0;
+  const left = Math.max(1, days - EXAM_BUFFER);
+  return Math.min(EXAM_MAX, Math.max(0, Math.ceil((unseen + introducedToday) / left) - introducedToday));
+}
+const activeExams = () => Object.entries(cfg.exams || {}).filter(([, d]) => d && daysUntil(d) >= 0).sort((a, b) => a[1].localeCompare(b[1]));
+const resIds = (r) => { const v = r && r.result !== undefined ? r.result : r; return Array.isArray(v) ? v : []; };   // one result of a `multi`
+
 // Today's new cards. Anki hands them out in the order they were added, so a deck imported topic by topic
 // gives you a whole day of one topic. With "Mix topics" on, deal them round-robin across Topic:: tags
 // instead (each topic still in its own added order), so the day's quota is spread over every topic.
+// Topics with an exam date (Stats → Topics) go first: enough of their new cards to see them all before the exam,
+// even if that goes over the daily limit. The rest of the day's quota is then filled as usual.
 async function pickNew(scope, cap) {
-  if (cap <= 0) return [];
   const base = `${scope} is:new -is:suspended -is:buried`;
-  const all = await anki('findCards', { query: base });
+  const exam = await examNew(scope, base);
+  const rest = await pickNewRest(base, cap - exam.length, new Set(exam));
+  return [...exam, ...rest];
+}
+async function examNew(scope, base) {
+  const ex = activeExams();
+  if (!ex.length) return [];
+  try {
+    const res = await anki('multi', { actions: ex.flatMap(([t]) => [
+      { action: 'findCards', params: { query: `${base} tag:${q('Topic::' + t)}` } },
+      { action: 'findCards', params: { query: `${scope} -is:suspended tag:${q('Topic::' + t)} introduced:1` } },
+    ]) }, 15000);
+    const out = [];
+    ex.forEach(([, date], i) => {
+      const fresh = resIds(res[i * 2]), intro = resIds(res[i * 2 + 1]);
+      out.push(...fresh.slice(0, examPace(fresh.length, intro.length, daysUntil(date))));
+    });
+    return out;
+  } catch { return []; }
+}
+async function pickNewRest(base, cap, skip) {
+  if (cap <= 0) return [];
+  const all = (await anki('findCards', { query: base })).filter((id) => !skip.has(id));
   if (!cfg.mixNew || all.length <= cap) return all.slice(0, cap);
   try {
     const topics = (await anki('getTags', {}, 5000)).filter((t) => /^Topic::[^:]+$/.test(t));
@@ -376,7 +417,7 @@ function render(force, arrive) {
   const v = view(), now = Date.now();
   let ready = v.filter((c) => !c.notBefore || c.notBefore <= now);
   if (!ready.length) ready = v.filter((c) => c.notBefore <= now + 20 * 60e3).sort((a, b) => a.notBefore - b.notBefore);
-  if (force || !cur) { cur = ready[0] || null; }
+  if (force || !cur) { const was = cur; cur = ready[0] || null; if (cur !== was) shownAt = Date.now(); }
   stage.innerHTML = '';
   curEl = nextEl = null;
   $('#done').hidden = !!cur;
@@ -447,8 +488,9 @@ function revealedUI(el, c) {
 let exCard = null;
 let exReadId = null;   // card whose explanation you opened yourself while it was on screen
 // `auto`: opened by itself after Hard/Again, when the card has already flown away, so recap it at the top
+// `auto` = 'view': opened from Stats → Struggling cards, which may have no explanation yet
 function openExplain(c, auto) {
-  if (!c || !c.ex) return;
+  if (!c || (!c.ex && auto !== 'view')) return;
   exCard = c;
   if (!auto) exReadId = c.id;   // read by choice: don't pop it up again when this card is graded
   const lang = langOf(c), recap = $('#exCard');
@@ -458,7 +500,9 @@ function openExplain(c, auto) {
     recap.firstChild.innerHTML = c.q; recap.lastChild.innerHTML = c.a;
     formatCode(recap, lang, true);
   }
-  $('#exBody').innerHTML = safeHtml(c.ex);
+  $('#exBody').innerHTML = c.ex ? safeHtml(c.ex) : '<p class="muted">No explanation for this card yet.</p>';
+  $('#ex h2').textContent = c.ex ? 'Explanation' : 'Card';
+  $('#exBad').hidden = !c.ex;
   formatCode($('#exBody'), lang, false);
   for (const d of $('#exBody').querySelectorAll('svg')) d.onclick = () => openZoom(d);
   $('#exTopic').textContent = c.topic ? topicName(c.topic) : '';
@@ -832,6 +876,13 @@ function answer(ease, dir, px, py) {
   const broke = ease <= 2 && combo >= 3 ? combo : 0;   // Again and Hard both end the streak
   combo = ease > 2 ? combo + 1 : 0;
   st.best = Math.max(st.best, combo);
+  if (!practice) {
+    const k = new Date(Date.now() - 4 * 3600e3).toLocaleDateString('en-CA'), d = appTime[k] || (appTime[k] = [0, 0]);
+    d[0] += Math.min(60000, Date.now() - shownAt); d[1]++;
+    const keys = Object.keys(appTime).sort(); if (keys.length > 800) delete appTime[keys[0]];
+    LS.set('appTime', appTime);
+  }
+  if (!practice && combo > (records.bestCombo || 0)) { records.bestCombo = combo; LS.set('records', records); }
   if (!practice) LS.set('stats', stats);
   LS.set('hinted', true); $('#hint').hidden = true;
   history.push(h); if (history.length > 30) history.shift();
@@ -1001,7 +1052,7 @@ const stage = $('#stage');
 
 stage.addEventListener('pointerdown', (e) => {
   SFX.unlock();
-  if (!curEl || !$('#sheet').hidden || !$('#ex').hidden || !$('#topics').hidden) return;
+  if (!curEl || !$('#sheet').hidden || !$('#ex').hidden || !$('#topics').hidden || !$('#stats').hidden) return;
   if (e.clientY > curEl.getBoundingClientRect().bottom) return;   // the strip under the card is the iPhone's home bar
   const body = curEl.querySelector('.body');
   drag = { x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, t0: performance.now(), mode: null, armed: false,
@@ -1091,6 +1142,7 @@ function dirOf(dx, dy) {
 // keyboard (desktop testing): space flips, arrows grade, z / backspace undoes
 addEventListener('keydown', (e) => {
   if (!$('#ex').hidden) { if (e.key === 'Escape' || e.key === 'e') closeExplain(); return; }
+  if (!$('#stats').hidden) { if (e.key === 'Escape') closeStats(); return; }
   if (!$('#sheet').hidden || !$('#topics').hidden) return;
   if (e.key === 'e' && cur && curEl && curEl.classList.contains('revealed')) return openExplain(cur);
   if (e.key === 'z' || e.key === 'Backspace') { e.preventDefault(); return undo(); }
@@ -1215,6 +1267,12 @@ const SFX = (() => {
       for (let j = 0; j < Math.min(2 + tier * 2, sparkle.length); j++) bell(C(sparkle[j]), { t: land + 0.06 + j * 0.09, dur: 0.6, vol: 0.06, send: 0.6 });
     },
     undo() { tone(700, { dur: 0.16, vol: 0.12, to: 350 }); },
+    // stats opening: a quick, quiet run of glassy notes rising with the bars
+    chart() { [0, 4, 7, 11, 14, 19].forEach((k, j) => bell(C(k + 12), { t: j * 0.05, dur: 0.45, vol: 0.035, send: 0.45 })); },
+    // tapping a day: a tiny pluck, brighter the busier the day was (level 0..4)
+    cell(l = 0) { tone(C([7, 12, 16, 19, 24][l] || 12) * 2, { dur: 0.06, type: 'triangle', vol: 0.07 }); },
+    // exam date saved: two bells a fifth apart, like a confirmation
+    set() { bell(C(12), { dur: 0.6, vol: 0.11 }); bell(C(19), { t: 0.09, dur: 0.85, vol: 0.11 }); },
   };
 })();
 

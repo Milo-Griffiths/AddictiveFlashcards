@@ -128,6 +128,19 @@ The dot next to the cards-left count (top left) shows the state: **green** synce
   - **Random:** a shuffled set, whether or not the cards are due. You can include cards you haven't studied yet.
   - **Hardest:** the cards you've been missing, worst first. Each studied card is scored from its last 12 answers in Anki's review log. Recent answers count most (each older one counts ×0.75), Hard counts as 0.6 of an Again, answers while first learning a card count half, and a card needs several misses to rank high. Cards with no recent misses are left out, and each card shows why it was picked (e.g. "missed 5 of last 6"). The ranking is saved, so this also works offline using the cards already on the device. Since practice isn't sent to Anki, practising a card doesn't lower its score. Answering it well in a real review does.
 
+## Stats and exam dates
+
+Tap the **chart icon** at the top (or *See your stats* on the "All caught up" screen). Everything comes from Anki's own review log, so reviews you do in Anki desktop count too. The last result is kept on the device, so the page opens instantly and still works offline (it says how old it is).
+
+- **Today:** cards reviewed and the share you got right, your day streak (it glows once you've reviewed today), and what's due today and tomorrow.
+- **Activity:** a 26-week heatmap and the last 30 days as bars. Tap any day for its count, time and recall. Time studied today, this week and in total. AnkiConnect logs 0 seconds for answers sent from the app, so the app times its own answers (capped at 60 s, like Anki). Older app answers count as about 10 s each.
+- **Topics:** for each `Topic::` tag, a bar of *known* (next review in 3+ weeks), *learning* and *new*, plus how many reviews you got right in the last 30 days.
+- **Exam dates:** tap a topic to set its exam date. Until then, that topic's new cards are paced so you've seen every one **5 days before the exam**, leaving time to review (at most 80 a day). These cards come first each day and can go over your daily new-card limit. Today's cards update when you close the page.
+- **Coming up:** reviews due over the next 7 or 30 days, with the busiest day.
+- **Struggling cards:** the cards you've pressed Again on most (3+ times). Tap one to see it with its explanation.
+- **How you grade:** how often you pressed Again, Hard, Good and Easy in the last 30 days, with a tip if the mix looks off.
+- **Records and goals:** best combo, longest streak, best day and all-time reviews, plus goals for reviews, day streak and combo. A small fanfare plays the first time you reach a new goal.
+
 ## Explanations (optional)
 
 Each card can have a short explanation that appears behind an **Explain** button after you flip it, and opens by itself after Hard or Again. Explanations live in **one JSON file in Anki's media folder**, so they sync through AnkiWeb with your collection, and you don't need to change any note type or field:
