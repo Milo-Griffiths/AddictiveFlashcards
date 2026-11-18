@@ -147,6 +147,63 @@ You can find a note's ID in Anki's browser: select a card and open **Card Info**
 
 **Code formatting:** multi-line `<code>` on cards becomes a left-aligned code block, and `` `backticks` `` in card text become inline code. Cards tagged `Topic::C` or `Topic::Haskell` also get syntax colouring.
 
+## Making good cards
+
+The app works best with cards built like this. A full card has four parts: a **question and answer**, **tags**, an **explanation**, and sometimes an **image**.
+
+### 1. The question and answer (Basic note type: Front / Back)
+
+- **One fact per card.** If the answer needs "and", consider two cards. Swiping is fast, so many small cards beat a few big ones.
+- **Give the context in the question.** Start with the subject so the card makes sense on its own, in any order and among other topics: *"In Verilog, …"*, *"In Git, …"*, *"In Haskell, …"*, *"In the context of a function from A to B, …"*.
+- **Ask for exactly one thing**, phrased so only one answer fits. *"What does the literal 8'd17 represent?"* is better than *"Tell me about Verilog literals"*.
+- **Keep answers short**: a phrase, a sentence or one line of code. Put the reasoning in the explanation instead.
+- **Syntax cards:** use *"provide an example of code in use to …"* and answer with just the line, e.g. `output wire [3:0] z;`.
+- **Contrast cards** for things that get mixed up: *"What is the difference between X and Y?"* answered as *"X does …, whereas Y does …"*.
+- **Lists:** only when the list *is* the fact (e.g. the three properties of an equivalence relation). Keep them to about five items, or accept "any five".
+- Avoid yes/no questions, and questions whose wording gives the answer away.
+
+### 2. Tags
+
+- `Topic::Name` (e.g. `Topic::Architecture`, `Topic::Haskell`): drives the topic picker, practice mode, topic mixing of new cards, and code colouring for `Topic::C` and `Topic::Haskell`. Give every note exactly one.
+- Optionally, a source tag such as `CS1::Architecture::01-2_Boolean_Algebra` (course, topic, lecture) so you can find all the cards from one lecture.
+
+### 3. The explanation
+
+Shown behind **Explain**, and automatically after Hard or Again, so write it for the moment you got the card wrong. See *Explanations* above for the file format. A good one:
+
+- **Says why, not just what** (roughly 60–200 words), in plain language.
+- **Shows a small example**: a `<pre>` code block, a worked step or a short table.
+- **Names the trap**: the common confusion, the thing it's often mixed up with, or a rule of thumb.
+- **Links to the neighbouring idea** in one line (e.g. "the counterpart operator is concatenation `{ }`").
+
+### 4. Images: only when the picture explains something
+
+An image earns its place when **seeing it makes the answer easier to understand or remember** than reading it. That means there's structure, movement or change to show, such as:
+
+- **Structure:** circuits and gates, memory layout, stack frames, linked lists, module/instance, trees.
+- **Things over time:** waveforms, clock edges, delays, `initial` vs `always`.
+- **Relationships:** sets and arrows for functions and relations, Venn diagrams, Hasse diagrams, git commit graphs.
+- **A worked transformation:** data going in and out, e.g. `tr`, `map`/`filter` unrolled, a fold, a list comprehension.
+
+**Don't add one** when it would only redraw the text: a line of syntax (`output wire [3:0] z;`), a command or flag name, a type signature, a list of laws or names, a plain definition, or an answer that already spells out every step.
+
+**How images are added here:**
+
+- Each image is a **self-contained SVG** named `fc_<noteId>.svg`, stored in Anki's media folder (AnkiConnect `storeMediaFile`).
+- It's appended to the end of the **Back** field as `<br><img src="fc_<noteId>.svg">`, and the note is tagged `FlowCards::Image` so they're easy to find or remove.
+- **Style:** an always-dark rounded background `#1c1c24` with text `#f2f2f5` and dimmed text `#8b8b99`. Highlights are gold `#ffc94d`, with green `#57e39b` for good/true, red `#ff5c7a` for bad/false and blue `#5cc8ff` for a second highlight. Fonts are the system sans-serif and monospace for code.
+- **Size:** about 520 px wide. The app caps card images at 38% of the screen height, so keep diagrams wide rather than tall, and keep text at 12 px or larger so it reads on a phone.
+- One short caption line at the bottom saying what to notice.
+- The app downloads card images with the cards (they work offline) on its next full sync.
+
+### Asking an AI to make cards
+
+To make new cards from lecture notes, give the AI the notes and the rules above, plus something like:
+
+> Make Anki Basic cards from these notes, one fact per card. Start each question with its context ("In Verilog, …"). Keep answers to a phrase or one line of code. Tag each with `Topic::<Name>` and `<Course>::<Topic>::<Lecture>`. For each card, also write a 60–200 word HTML explanation (`<p>`, `<b>`, `<code>`, `<pre>`, `<ul>`) that explains why, gives a small example and names the common confusion. Suggest an image only where a diagram shows structure, change over time, relationships or a worked transformation. Never for syntax, command names, type signatures or lists.
+
+Then import the cards with AnkiConnect (`addNotes`), add the explanations to `_flowcards_explanations.json` under each new note ID, and add images as described above.
+
 ## Troubleshooting
 
 | Message or symptom | Fix |

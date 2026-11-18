@@ -1436,10 +1436,16 @@ const DEMO = [
   sync(true, true);
 })();
 
+// Graded and then the app left the screen moments later: that was the swipe up to go home (or into the app
+// switcher), not an answer. iOS can report leaving late, so look back 1.5 s, and listen to every signal it
+// may send first (blur, pagehide, visibilitychange). Runs before anything is sent to Anki.
+function takeBackIfLeaving() {
+  if (Date.now() - lastAnswerAt < 1500 && history.length) { lastAnswerAt = 0; undo(); }
+}
+addEventListener('blur', takeBackIfLeaving);
+addEventListener('pagehide', takeBackIfLeaving);
 document.addEventListener('visibilitychange', () => {
-  // graded and gone within half a second: that was the swipe to go home, not an answer. Take it back
-  // before anything is sent to Anki.
-  if (document.visibilityState === 'hidden' && Date.now() - lastAnswerAt < 500 && history.length) { lastAnswerAt = 0; undo(); }
+  if (document.visibilityState === 'hidden') takeBackIfLeaving();
   if (cfg.demo) return;
   if (document.visibilityState === 'visible') sync(Date.now() - lastFetch > 5 * 60e3 || !deck.length);
   else { persist(); if (queue.length) flush(true).catch(() => {}); flushTags().catch(() => {}); }  // leaving the app: push everything
@@ -1447,4 +1453,16 @@ document.addEventListener('visibilitychange', () => {
 addEventListener('online', () => sync(!deck.length));
 setInterval(() => { if ((queue.length || tagQueue.length) && document.visibilityState === 'visible' && Date.now() > retryAt) sync(false); }, 60000);
 
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+// Home-screen apps on iOS resume instead of reloading, so they can run an old version for days.
+// Check for an update whenever the app comes back, and reload into it as soon as it's installed.
+if ('serviceWorker' in navigator) {
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloading = false;
+  navigator.serviceWorker.register('sw.js').then((reg) => {
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+  }).catch(() => {});
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloading) return;
+    reloading = true; persist(); setTimeout(() => location.reload(), 300);
+  });
+}
