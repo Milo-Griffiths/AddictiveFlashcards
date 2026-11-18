@@ -801,8 +801,10 @@ $('#pEnd').onclick = endPractice;
 $('#done2').onclick = endPractice;
 
 let uidSeq = Date.now();
+let lastAnswerAt = 0;   // when the last card was graded (to catch grades made by swiping home)
 function answer(ease, dir, px, py) {
   if (!cur || !curEl) return;
+  lastAnswerAt = Date.now();
   const card = cur, el = curEl;
   const st = practice ? practice.stats : stats;
   const h = { uid: ++uidSeq, card: { ...card }, ease, dir, combo, doneCount, stats: { ...st }, reinserted: null };
@@ -1000,6 +1002,7 @@ const stage = $('#stage');
 stage.addEventListener('pointerdown', (e) => {
   SFX.unlock();
   if (!curEl || !$('#sheet').hidden || !$('#ex').hidden || !$('#topics').hidden) return;
+  if (e.clientY > curEl.getBoundingClientRect().bottom) return;   // the strip under the card is the iPhone's home bar
   const body = curEl.querySelector('.body');
   drag = { x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, t0: performance.now(), mode: null, armed: false,
     body, samples: [[e.clientX, e.clientY, performance.now()]] };
@@ -1045,8 +1048,16 @@ stage.addEventListener('pointermove', (e) => {
   } else { tint.style.opacity = 0; lbl.style.opacity = 0; }
 });
 
-const endDrag = () => {
+const endDrag = (e) => {
   if (!drag || !curEl) { drag = null; return; }
+  // iOS cancels the touch when it takes over a system gesture (swipe home, Control Center…):
+  // that's never an answer, so snap the card back instead of grading it
+  if (e && e.type === 'pointercancel') {
+    drag = null;
+    curEl.style.transition = 'transform .35s cubic-bezier(.2,1.4,.4,1)'; curEl.style.transform = '';
+    curEl.querySelector('.tint').style.opacity = 0; curEl.querySelector('.lbl').style.opacity = 0;
+    return;
+  }
   const d = drag; drag = null;
   const dx = d.x - d.x0, dy = d.y - d.y0, dist = Math.hypot(dx, dy);
   const s0 = d.samples[0], s1 = d.samples[d.samples.length - 1];
@@ -1426,6 +1437,9 @@ const DEMO = [
 })();
 
 document.addEventListener('visibilitychange', () => {
+  // graded and gone within half a second: that was the swipe to go home, not an answer. Take it back
+  // before anything is sent to Anki.
+  if (document.visibilityState === 'hidden' && Date.now() - lastAnswerAt < 500 && history.length) { lastAnswerAt = 0; undo(); }
   if (cfg.demo) return;
   if (document.visibilityState === 'visible') sync(Date.now() - lastFetch > 5 * 60e3 || !deck.length);
   else { persist(); if (queue.length) flush(true).catch(() => {}); flushTags().catch(() => {}); }  // leaving the app: push everything
