@@ -340,7 +340,8 @@ function fit(el) { // shrink text until it fits, then allow internal scrolling
   if (body.scrollHeight > body.clientHeight + 2) body.classList.add('long');
 }
 
-function render(force) {
+// `arrive`: a card was just graded, so spring the next one forward
+function render(force, arrive) {
   const stage = $('#stage');
   const v = view(), now = Date.now();
   let ready = v.filter((c) => !c.notBefore || c.notBefore <= now);
@@ -352,8 +353,13 @@ function render(force) {
   heat();
   if (!cur) { showCombo(); showDone(); updateBar(); setStatus(); return; }
   const nx = ready.find((c) => c !== cur);
-  if (nx) { nextEl = makeCard(nx, true); stage.appendChild(nextEl); }
+  if (nx) { nextEl = makeCard(nx, true); if (arrive) nextEl.classList.add('enter'); stage.appendChild(nextEl); }
   curEl = makeCard(cur, false); stage.appendChild(curEl);
+  if (arrive) {
+    const c = curEl;
+    c.classList.add('arrive');
+    setTimeout(() => c.classList.remove('arrive'), 800);   // after the shine has crossed
+  }
   fit(curEl);
   $('#hint').hidden = LS.get('hinted', false);
   updateBar(); setStatus();
@@ -427,10 +433,16 @@ function openExplain(c, auto) {
   for (const d of $('#exBody').querySelectorAll('svg')) d.onclick = () => openZoom(d);
   $('#exTopic').textContent = c.topic ? topicName(c.topic) : '';
   updateBadBtn();
+  const wasOpen = !$('#ex').hidden;
   $('#ex').hidden = false; $('#exPanel').scrollTop = 0;
-  haptic(1); SFX.tick();
+  haptic(1); if (!wasOpen) SFX.open();
 }
-const closeExplain = () => { $('#ex').hidden = true; exCard = null; $('#zoom').hidden = true; };
+// `silent`: closed as a side effect (grading a card), which plays its own sound
+const closeExplain = (silent) => {
+  const wasOpen = !$('#ex').hidden;
+  $('#ex').hidden = true; exCard = null; $('#zoom').hidden = true;
+  if (wasOpen && silent !== true) { haptic(1); SFX.close(); }
+};
 
 // Explanations may contain inline SVG diagrams. Strip anything that could run code before showing them.
 function safeHtml(html) {
@@ -449,10 +461,11 @@ function openZoom(svg) {
   const z = $('#zoom'), c = svg.cloneNode(true);
   c.onclick = null;
   z.querySelector('.inner').replaceChildren(c);
-  z.hidden = false; haptic(1);
+  z.hidden = false; haptic(1); SFX.open();
   z.scrollLeft = (z.scrollWidth - z.clientWidth) / 2;
 }
-$('#zoom').onclick = () => { $('#zoom').hidden = true; };
+$('#zoom').onclick = () => { $('#zoom').hidden = true; SFX.close(); };
+$('#exPanel').addEventListener('scroll', (e) => e.currentTarget.classList.toggle('scrolled', e.currentTarget.scrollTop > 4), { passive: true });
 $('#ex .scrim').onclick = closeExplain;
 $('#exClose').onclick = closeExplain;
 
@@ -598,7 +611,7 @@ function setTopic(t) {
   cur = null; render(true); haptic(1);
 }
 $('#topicBtn').onclick = openTopics;
-$('#topics .scrim').onclick = () => { $('#topics').hidden = true; };
+$('#topics .scrim').onclick = () => { $('#topics').hidden = true; SFX.close(); };
 
 /* ---------- practice mode ---------- */
 // Go through cards from chosen topics, due or not. Answers stay on the phone: nothing is queued for Anki.
@@ -765,7 +778,7 @@ function answer(ease, dir, px, py) {
   const h = { uid: ++uidSeq, card: { ...card }, ease, dir, combo, doneCount, stats: { ...st }, reinserted: null };
   if (!cfg.demo && !practice) queue.push({ uid: h.uid, cardId: card.id, ease, t: Date.now() });   // practice never reaches Anki
   const at = deck.indexOf(card); deck.splice(at < 0 ? 0 : at, 1);
-  closeExplain();
+  closeExplain(true);
 
   if (practice) {
     // no scheduling: Again comes back in a few cards, Hard a bit later, Good/Easy are done
@@ -805,13 +818,15 @@ function answer(ease, dir, px, py) {
   showCombo();
 
   // fly out
+  el.classList.remove('arrive');   // graded before it finished arriving: let the fly-out take over
   const off = OFF(dir);
   el.style.transition = 'transform .28s cubic-bezier(.4,0,.6,1), opacity .28s';
   el.style.transform = `translate(${off[0]}px, ${off[1]}px) rotate(${off[2]}deg)`;
   el.style.opacity = '0';
-  if (nextEl) { nextEl.classList.remove('next'); nextEl.style.transform = 'none'; nextEl.style.opacity = '1'; }
-  cur = null; curEl = null;
-  setTimeout(() => { el.remove(); render(true); }, 200);
+  $('#fly').appendChild(el);   // keeps flying while the stage is rebuilt underneath it
+  cur = null; curEl = null; nextEl = null;
+  setTimeout(() => el.remove(), 320);
+  render(true, true);
 
   // Missed it? Show the explanation straight away (Settings → Show explanation automatically).
   // …unless you already opened it yourself on this showing of the card (Settings → Skip if I've already read it).
@@ -865,7 +880,7 @@ function reward(ease, x, y) {
     setTimeout(() => {
       FX.burst(W / 2, H * 0.45, 90, '#ffc94d', 1.8, 1);
       FX.wave(W / 2, H * 0.45, '#ffd75e', 220, 0.8);
-      milestone(`×${c}`, true); SFX.milestone(0.5); haptic(2);
+      milestone(`×${c}`, true); SFX.streak(c); haptic(2);
     }, 100);
   }
 }
@@ -958,6 +973,7 @@ stage.addEventListener('pointerdown', (e) => {
   const body = curEl.querySelector('.body');
   drag = { x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, t0: performance.now(), mode: null, armed: false,
     body, samples: [[e.clientX, e.clientY, performance.now()]] };
+  curEl.classList.remove('arrive');
   curEl.style.transition = 'none';
   stage.setPointerCapture(e.pointerId);
 });
@@ -1059,7 +1075,7 @@ function haptic(n = 1) {
 
 /* ---------- sound ---------- */
 const SFX = (() => {
-  let ac, out;
+  let ac, out, wet;
   const PENTA = [0, 2, 4, 7, 9];
   // C4 pentatonic climbing gently with the streak, capped so it never gets shrill (max ~E5)
   const note = (i) => { i = Math.min(i, 7); return 261.63 * Math.pow(2, (PENTA[i % 5] + 12 * Math.floor(i / 5)) / 12); };
@@ -1074,9 +1090,14 @@ const SFX = (() => {
       ac = new (window.AudioContext || window.webkitAudioContext)();
       const comp = ac.createDynamicsCompressor(); out = ac.createGain(); out.gain.value = 0.5;
       out.connect(comp).connect(ac.destination);
+      // a soft echo that streak sounds can send into, so they ring out instead of stopping dead
+      wet = ac.createGain(); wet.gain.value = 1;
+      const dl = ac.createDelay(1), fb = ac.createGain(), lp = ac.createBiquadFilter(), ret = ac.createGain();
+      dl.delayTime.value = 0.17; fb.gain.value = 0.34; lp.type = 'lowpass'; lp.frequency.value = 2600; ret.gain.value = 0.32;
+      wet.connect(dl); dl.connect(lp); lp.connect(fb); fb.connect(dl); lp.connect(ret); ret.connect(out);
     } catch { ac = null; }
   }
-  function drop() { const a = ac; ac = null; out = null; if (a) a.close().catch(() => {}); }
+  function drop() { const a = ac; ac = null; out = null; wet = null; if (a) a.close().catch(() => {}); }
   function ctx() {
     if (!cfg.sound) return null;
     if (ac && (stale || ac.state === 'closed')) drop();
@@ -1095,7 +1116,7 @@ const SFX = (() => {
   addEventListener('pageshow', (e) => { if (e.persisted) stale = true; });
   // touchend / click count as a user gesture on iOS (pointerdown/touchstart don't always), so wake audio on those
   for (const ev of ['touchend', 'click', 'keydown']) document.addEventListener(ev, () => { if (cfg.sound && (!ac || ac.state !== 'running' || stale)) ctx(); }, { capture: true, passive: true });
-  function tone(f, { t = 0, dur = 0.18, type = 'sine', vol = 0.3, to = null, attack = 0.005, filter = null } = {}) {
+  function tone(f, { t = 0, dur = 0.18, type = 'sine', vol = 0.3, to = null, attack = 0.005, filter = null, send = 0 } = {}) {
     const a = ctx(); if (!a) return;
     const s = a.currentTime + t, o = a.createOscillator(), g = a.createGain();
     o.type = type; o.frequency.setValueAtTime(f, s);
@@ -1104,10 +1125,21 @@ const SFX = (() => {
     let node = o;
     if (filter) { const fl = a.createBiquadFilter(); fl.type = 'lowpass'; fl.frequency.value = filter; node.connect(fl); node = fl; }
     node.connect(g).connect(out); o.start(s); o.stop(s + dur + 0.05);
+    if (send && wet) { const sg = a.createGain(); sg.gain.value = send; g.connect(sg).connect(wet); }
   }
+  // a struck bell: a pure tone plus a quickly fading octave and twelfth give it a glassy "ting"
+  function bell(f, { t = 0, dur = 0.9, vol = 0.14, send = 0.5 } = {}) {
+    tone(f, { t, dur, vol, send });
+    tone(f * 2, { t, dur: dur * 0.45, vol: vol * 0.32, send });
+    tone(f * 3, { t, dur: dur * 0.22, vol: vol * 0.12, send });
+  }
+  const C = (k) => 261.63 * Math.pow(2, k / 12);   // semitones above middle C
   return {
     unlock() { ctx(); },
     tick() { tone(900, { dur: 0.03, vol: 0.06 }); },
+    // panels: a soft rising "bloop" in, the same falling out
+    open() { tone(520, { dur: 0.1, vol: 0.09, to: 760, attack: 0.008 }); tone(1040, { dur: 0.06, vol: 0.02, t: 0.03 }); },
+    close() { tone(700, { dur: 0.1, vol: 0.09, to: 440, attack: 0.008 }); tone(350, { dur: 0.08, vol: 0.04, t: 0.02 }); },
     reveal() { tone(440, { dur: 0.09, vol: 0.12, to: 587 }); },
     good(ease, c) {
       const i = Math.floor(Math.min(c, 21) / 3), f = note(i);  // steps up every 3 in a row
@@ -1120,10 +1152,24 @@ const SFX = (() => {
       tone(220, { dur: 0.35, type: 'sawtooth', vol: 0.22, to: 70, filter: 900 });
       tone(110, { dur: 0.3, vol: 0.35, to: 45 });
     },
+    // ×5, ×15, ×25…: a quick sparkling C-major arpeggio of bells (an extra top note from ×15 on)
+    streak(c) {
+      const run = c >= 15 ? [16, 19, 24, 28] : [16, 19, 24];   // E5 G5 C6 (E6)
+      run.forEach((k, j) => bell(C(k), { t: j * 0.065, dur: 0.75 + j * 0.1, vol: 0.13 }));
+      tone(C(-12), { dur: 0.5, vol: 0.12, attack: 0.01 });     // a soft low C underneath
+    },
+    // ×10, ×20…: a rising fanfare that lands on a warm, ringing chord; bigger tiers sparkle more
     milestone(tier) {
-      const base = tier >= 1 ? [0, 2, 4, 5, 7] : [2, 4];
-      base.forEach((k, j) => tone(note(k + 2), { t: j * 0.07, dur: 0.45, type: 'triangle', vol: 0.22 }));
-      if (tier >= 1) [0, 4, 7].forEach((k) => tone(261.63 * Math.pow(2, k / 12), { t: 0.35, dur: 0.8, type: 'triangle', vol: 0.12 })); // warm C major chord
+      const up = [0, 4, 7, 12, 16];                              // C4 E4 G4 C5 E5
+      up.forEach((k, j) => {
+        tone(C(k), { t: j * 0.055, dur: 0.3, type: 'triangle', vol: 0.2, send: 0.25 });
+        tone(C(k + 12), { t: j * 0.055, dur: 0.16, vol: 0.04 });
+      });
+      const land = 0.3;
+      [-12, 0, 7, 12, 16].forEach((k) => tone(C(k), { t: land, dur: 1.4, type: 'triangle', vol: k < 0 ? 0.16 : 0.09, attack: 0.03, filter: 2400, send: 0.3 }));
+      tone(C(-24), { t: land, dur: 0.9, vol: 0.2, attack: 0.01 });  // bass thump
+      const sparkle = [31, 28, 36, 31, 40, 36];                  // G6 E6 C7 …
+      for (let j = 0; j < Math.min(2 + tier * 2, sparkle.length); j++) bell(C(sparkle[j]), { t: land + 0.06 + j * 0.09, dur: 0.6, vol: 0.06, send: 0.6 });
     },
     undo() { tone(700, { dur: 0.16, vol: 0.12, to: 350 }); },
   };
@@ -1253,8 +1299,8 @@ function openSheet(msg, cls) {
 function closeSheet() { $('#sheet').hidden = true; }
 $('#gear').onclick = () => openSheet();
 $('#status').onclick = () => sync(true, true);
-$('#sheet .scrim').onclick = closeSheet;
-$('#sClose').onclick = closeSheet;
+$('#sheet .scrim').onclick = () => { closeSheet(); SFX.close(); };
+$('#sClose').onclick = () => { closeSheet(); SFX.close(); };
 // instant-apply toggles, no connection needed
 $('#sSound').onchange = (e) => { cfg.sound = e.target.checked; saveCfg(); if (cfg.sound) SFX.good(3, 2); };
 $('#sHap').onchange = (e) => { cfg.haptics = e.target.checked; saveCfg(); haptic(1); };

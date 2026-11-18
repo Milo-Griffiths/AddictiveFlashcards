@@ -337,3 +337,33 @@ svg .dot { fill: currentColor; }
   display: flex; align-items: center; padding: calc(var(--safe-t) + 20px) 12px calc(var(--safe-b) + 44px); }
 #zoom .inner { flex: none; width: 170%; max-width: 900px; }  /* left-aligned so nothing is cut off; JS scrolls it to the middle */
 #zoom p { position: fixed; bottom: calc(var(--safe-b) + 18px); left: 0; right: 0; text-align: center; color: var(--dim); font-size: 13px; margin: 0; }
+
+/* Graded card keeps flying here while the next one springs forward in #stage */
+#fly { position: fixed; inset: 0; pointer-events: none; }
+.card.arrive { animation: arrive .46s cubic-bezier(.25,.9,.35,1.05); }
+@keyframes arrive {
+  0%   { transform: translateY(18px) scale(.94); opacity: .5; }
+  55%  { transform: translateY(-5px) scale(1.018); opacity: 1; }
+  100% { transform: none; opacity: 1; }
+}
+.card.arrive .body { animation: rise .38s .06s cubic-bezier(.2,.9,.3,1) both; }
+.card.arrive::after {
+  content: ""; position: absolute; inset: 0; z-index: 2; pointer-events: none; border-radius: inherit;
+  background: linear-gradient(110deg, transparent 30%, rgba(255,255,255,.07) 46%, rgba(255,215,120,.10) 50%, transparent 66%);
+  transform: translateX(-110%); animation: shine .62s .08s ease-out forwards;
+}
+@keyframes shine { to { transform: translateX(110%); } }
+.card.next.enter { animation: nextIn .42s .05s cubic-bezier(.2,.8,.2,1) both; }
+@keyframes nextIn { from { transform: translateY(46px) scale(.88); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .card.arrive, .card.arrive .body, .card.next.enter { animation-duration: .01s; }
+  .card.arrive::after { display: none; }
+}
+
+/* Explanation: the title row and close button stay pinned while you scroll */
+#ex .head {
+  position: sticky; top: -10px; z-index: 6;
+  margin: -4px -20px 6px; padding: 8px 20px 10px;
+  background: var(--card); border-bottom: 1px solid transparent; transition: border-color .2s;
+}
+#ex .panel.scrolled .head { border-bottom-color: var(--line); }
