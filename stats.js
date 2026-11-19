@@ -245,20 +245,23 @@ function examLine(r) {
   const by = days > EXAM_BUFFER ? `${EXAM_BUFFER} days before the exam` : 'before the exam';
   return `<p class="ex-line">About <b>${pace}</b> new card${pace === 1 ? '' : 's'} a day, so you'll have seen all ${fmtN(r.unseen + r.intro)} remaining ${by}${pace >= EXAM_MAX ? ' (capped — you may need a few long days)' : ''}</p>`;
 }
+function examChip(r) {
+  const d = (cfg.exams || {})[r.t], days = d ? daysUntil(d) : null;
+  return d ? `<span class="exam-chip${days < 0 ? ' past' : days <= 14 ? ' soon' : ''}">${days < 0 ? 'Exam passed' : days === 0 ? 'Exam today' : `Exam in ${days} day${days === 1 ? '' : 's'}`}</span>`
+    : '<span class="exam-chip add">+ Exam date</span>';
+}
 function secTopics() {
   if (!S.topics.length) return sec('Topics', '<p class="muted">Topics appear once your cards have Topic:: tags.</p>');
   const rows = S.topics.map((r) => {
-    const learning = r.total - r.unseen - r.known, d = (cfg.exams || {})[r.t], days = d ? daysUntil(d) : null;
-    const chip = d ? `<span class="exam-chip${days < 0 ? ' past' : days <= 14 ? ' soon' : ''}">${days < 0 ? 'Exam passed' : days === 0 ? 'Exam today' : `Exam in ${days} day${days === 1 ? '' : 's'}`}</span>`
-      : '<span class="exam-chip add">+ Exam date</span>';
+    const learning = r.total - r.unseen - r.known, d = (cfg.exams || {})[r.t];
     return `<div class="trow" data-topic="${esc(r.t)}">
-      <div class="top"><b>${esc(topicName(r.t))}</b>${chip}</div>
+      <div class="top"><b>${esc(topicName(r.t))}</b>${examChip(r)}</div>
       <div class="stack"><i class="k" style="--w:${r.known / r.total}"></i><i class="y" style="--w:${learning / r.total}"></i><i class="u" style="--w:${r.unseen / r.total}"></i></div>
       <p class="sub">${pct(r.total - r.unseen, r.total)}% seen · ${fmtN(r.known)} known · ${fmtN(learning)} learning · ${fmtN(r.unseen)} new${r.rev >= 5 ? ` · <span class="${r.ok / r.rev < 0.8 ? 'warn' : ''}">${pct(r.ok, r.rev)}% recalled</span>` : ''}</p>
-      ${examLine(r)}
+      <div class="ex-slot">${examLine(r)}</div>
       <div class="exam-edit">
         <label>Exam date <input type="date" data-exam="${esc(r.t)}" value="${d || ''}" min="${new Date().toLocaleDateString('en-CA')}"></label>
-        ${d ? `<button type="button" class="ghost" data-clear="${esc(r.t)}">Remove</button>` : ''}
+        <button type="button" class="ghost" data-clear="${esc(r.t)}"${d ? '' : ' hidden'}>Remove</button>
       </div>
     </div>`;
   }).join('');
@@ -373,19 +376,40 @@ stBody.addEventListener('click', async (e) => {
   const card = t.closest('[data-card]');
   if (card) openStruggler(+card.dataset.card);
 });
+// iOS fills an empty date box with today and fires "change" as soon as its picker opens, and again on
+// every scroll of the wheel. So the date box is never rebuilt while you use it (that closed the picker):
+// only the row's badge, pacing line and Remove button update in place. The confirmation sound waits until
+// the picker closes, and closing it on today's date after starting from an empty box counts as cancelled.
+stBody.addEventListener('focusin', (e) => {
+  const inp = e.target.closest('[data-exam]');
+  if (inp) inp.dataset.was = (cfg.exams || {})[inp.dataset.exam] || '';
+});
 stBody.addEventListener('change', (e) => {
   const inp = e.target.closest('[data-exam]');
-  if (inp) setExam(inp.dataset.exam, inp.value);
+  if (inp) setExam(inp.dataset.exam, inp.value, true);
 });
-function setExam(topic, date) {
+stBody.addEventListener('focusout', (e) => {
+  const inp = e.target.closest('[data-exam]');
+  if (!inp || inp.dataset.was === undefined) return;
+  const was = inp.dataset.was; delete inp.dataset.was;
+  const today = new Date().toLocaleDateString('en-CA');
+  if (!was && inp.value === today) { inp.value = ''; setExam(inp.dataset.exam, '', true); return; }   // just opened and closed
+  if (inp.value !== was) { SFX[inp.value ? 'set' : 'pick'](false); haptic(inp.value ? 2 : 1); flashRow(inp.dataset.exam); }
+});
+const rowOf = (topic) => [...stBody.querySelectorAll('.trow')].find((r) => r.dataset.topic === topic);
+function flashRow(topic) { const row = rowOf(topic); if (row) { row.classList.remove('flash'); void row.offsetWidth; row.classList.add('flash'); } }
+function setExam(topic, date, quiet) {
   cfg.exams = { ...(cfg.exams || {}) };
   if (date) cfg.exams[topic] = date; else delete cfg.exams[topic];
   saveCfg(); examChanged = true;
-  // redraw just the topics section, keeping this row open
-  const box = $('#stTopics'); box.outerHTML = secTopics();
-  const row = [...stBody.querySelectorAll('.trow')].find((r) => r.dataset.topic === topic);
-  if (row) { row.classList.add('open', 'flash'); }
-  if (date) { SFX.set(); haptic(2); } else { SFX.pick(false); haptic(1); }
+  const row = rowOf(topic), r = S.topics.find((x) => x.t === topic);
+  if (row && r) {
+    row.querySelector('.exam-chip').outerHTML = examChip(r);
+    row.querySelector('.ex-slot').innerHTML = examLine(r);
+    row.querySelector('[data-clear]').hidden = !date;
+    if (!date) row.querySelector('[data-exam]').value = '';
+  }
+  if (!quiet) { flashRow(topic); if (date) { SFX.set(); haptic(2); } else { SFX.pick(false); haptic(1); } }
 }
 async function openStruggler(id) {
   if (!id) { toast('Demo card'); return; }

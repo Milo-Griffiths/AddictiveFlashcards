@@ -115,9 +115,13 @@ Installed, it opens full-screen and keeps working offline.
 | Show the explanation automatically | After Hard or Again (default), after Again only, or never. |
 | Not if I already opened it on that card | On by default. If you opened the explanation yourself before grading, it won't pop up again. |
 
-## All-day offline
+## A week offline
 
 Open the app once while Anki is reachable, and it downloads the whole day's cards, including learning cards due later. After that you can review with the computer closed. Cards you get wrong, and new or learning cards, come back after their real Anki step delay (from your deck options, e.g. 1 min then 10 min). If nothing else is left, they can come up to 20 minutes early, like Anki's "learn ahead". Answers wait on the device and are sent the next time Anki can be reached. Anki schedules them as of that moment, so intervals can be off by about a day.
+
+Each sync also downloads **the next 6 days**: the reviews Anki has due on each day, plus each day's share of new cards (your daily limit, with exam-date pacing). Each day's cards appear on that day (Anki's day starts at 4am), so you can study for a week without reaching the computer. The "All caught up" screen says how many cards are ready for tomorrow.
+
+**Offline repeats.** If you answer a card offline and Anki said it would come back within the week (e.g. Good → 3 days), the app shows it again on that day, marked *offline repeat*. Only a card's first answer is sent to Anki. AnkiConnect stamps every answer with the moment it arrives, so sending two answers for one card at once would wreck its schedule. Repeat answers count in your streak and stats but stay on the device. The next successful sync replaces everything downloaded ahead with Anki's real schedule. After a week away, a few cards may come back slightly early, because Anki didn't see their repeat.
 
 The dot next to the cards-left count (top left) shows the state: **green** synced, **blinking blue** syncing, **amber** answers waiting (shown as e.g. **↑3**; on a narrow screen this note is hidden, but the count always shows), **grey** offline. Tap it to force a sync.
 

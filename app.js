@@ -51,6 +51,23 @@ saveCfg();
 let deck = [];        // remaining cards (cards answered "again" are re-inserted)
 let queue = [];       // answers waiting to be pushed: {uid, cardId, ease, t}
 let tagQueue = [];    // "bad explanation" flags waiting to be pushed: {note, on}
+// Cards for the coming days, downloaded ahead so you can study for a week without reaching Anki.
+// Each has `day` (the Anki day it's released on). `repeat` cards are the app's own re-showing of a card you
+// already answered offline: their answers stay on the phone, since Anki only takes the first one (see answer()).
+let ahead = [];
+// the week ahead can be a few MB (images are inlined), so it's saved a moment after it changes rather than on
+// every answer, and straight away when the app is hidden
+let aheadT = 0;
+const saveAhead = (now) => { clearTimeout(aheadT); if (now === true) IDB.set('ahead', ahead); else aheadT = setTimeout(() => IDB.set('ahead', ahead), 1500); };
+const AHEAD = 6;                                               // today + 6 = a week
+const ankiDay = (ms = Date.now()) => new Date(ms - 4 * 3600e3).toLocaleDateString('en-CA');   // Anki's day starts at 4am
+const dayAfter = (k, n) => { const d = new Date(k + 'T12:00'); d.setDate(d.getDate() + n); return d.toLocaleDateString('en-CA'); };
+// days in one of Anki's interval labels ("10m", "3d", "1.5mo"…); 0 for anything due again today
+function labelDays(s) {
+  const m = /([\d.]+)\s*(m|h|d|w|mo|y)\b/.exec(s || '');
+  if (!m) return 0;
+  return Math.round(+m[1] * ({ m: 0, h: 0, d: 1, w: 7, mo: 30, y: 365 }[m[2]]));
+}
 let practice = null;  // practice session: {topics, stats, saved: review state while practising}
 let exAll = null;     // last downloaded explanations file {noteId: html}
 const BAD_TAG = 'FlowCards::BadExplanation';
@@ -157,13 +174,13 @@ const resIds = (r) => { const v = r && r.result !== undefined ? r.result : r; re
 // instead (each topic still in its own added order), so the day's quota is spread over every topic.
 // Topics with an exam date (Stats → Topics) go first: enough of their new cards to see them all before the exam,
 // even if that goes over the daily limit. The rest of the day's quota is then filled as usual.
-async function pickNew(scope, cap) {
+async function pickNew(scope, cap, days = 1) {
   const base = `${scope} is:new -is:suspended -is:buried`;
-  const exam = await examNew(scope, base);
+  const exam = await examNew(scope, base, days);
   const rest = await pickNewRest(base, cap - exam.length, new Set(exam));
   return [...exam, ...rest];
 }
-async function examNew(scope, base) {
+async function examNew(scope, base, days = 1) {
   const ex = activeExams();
   if (!ex.length) return [];
   try {
@@ -174,7 +191,7 @@ async function examNew(scope, base) {
     const out = [];
     ex.forEach(([, date], i) => {
       const fresh = resIds(res[i * 2]), intro = resIds(res[i * 2 + 1]);
-      out.push(...fresh.slice(0, examPace(fresh.length, intro.length, daysUntil(date))));
+      out.push(...fresh.slice(0, examPace(fresh.length, intro.length, daysUntil(date)) * days));
     });
     return out;
   } catch { return []; }
@@ -222,7 +239,17 @@ async function fetchDeck() {
     pickNew(scope, newCap),
   ]);
   const ids = [...new Set([...due.slice(0, Math.max(revCap, 0)), ...learn, ...fresh])];
-  const info = await cardsInfo(ids);
+  // the coming week: the reviews Anki has due on each day, and each day's share of new cards
+  const have = new Set(ids), dayOf = new Map(), today = ankiDay();
+  try {
+    const live = `${scope} -is:suspended -is:buried`;
+    const res = await anki('multi', { actions: Array.from({ length: AHEAD }, (_, i) => ({ action: 'findCards', params: { query: `${live} prop:due=${i + 1}` } })) }, 15000);
+    res.forEach((r, i) => { for (const id of resIds(r)) if (!have.has(id) && !dayOf.has(id)) dayOf.set(id, i + 1); });
+    const later = (await pickNew(scope, fresh.length + AHEAD * cfg.newLimit, AHEAD + 1)).filter((id) => !have.has(id) && !dayOf.has(id));
+    const per = Math.max(1, Math.ceil(later.length / AHEAD));
+    later.forEach((id, j) => dayOf.set(id, Math.min(AHEAD, 1 + Math.floor(j / per))));
+  } catch (e) { console.warn('could not fetch the week ahead', e); }
+  const info = await cardsInfo([...ids, ...dayOf.keys()]);
   exAll = await loadExplanations();
   IDB.set('ex', exAll);
   // each deck's learning / relearning steps (minutes), so offline re-shows match Anki's timing
@@ -240,15 +267,31 @@ async function fetchDeck() {
       step: phase === 'learn' || phase === 'relearn' ? Math.max(0, list.length - left) : 0,
       // intraday learning cards (queue 1) carry an epoch-seconds due time
       notBefore: c.queue === 1 && c.due > 1e9 ? Math.max(0, c.due * 1000) : 0,
+      ...(dayOf.has(c.cardId) ? { day: dayAfter(today, dayOf.get(c.cardId)), notBefore: 0 } : {}),
     };
   });
-  // reviews in due order, new cards woven in every ~4th slot
+  return { today: weave(cards.filter((c) => !c.day)), ahead: cards.filter((c) => c.day) };
+}
+// reviews in due order, new cards woven in every ~4th slot
+function weave(cards) {
   const revs = cards.filter((c) => !c.isNew), news = cards.filter((c) => c.isNew), out = [];
   while (revs.length || news.length) {
     for (let k = 0; k < 3 && revs.length; k++) out.push(revs.shift());
     if (news.length) out.push(news.shift());
   }
   return out;
+}
+// A new day has started: move its downloaded cards into today's deck (or the parked one while practising).
+function releaseAhead() {
+  const t = ankiDay(), due = ahead.filter((c) => c.day <= t);
+  if (!due.length) return false;
+  ahead = ahead.filter((c) => c.day > t);
+  const into = practice ? practice.saved : null, list = into ? into.deck : deck, have = new Set(list.map((c) => c.id));
+  const add = weave(due.filter((c) => !have.has(c.id)).map((c) => ({ ...c, day: undefined })));
+  list.push(...add);
+  if (into) into.total += add.length; else total += add.length;
+  persist(); saveAhead();
+  return add.length > 0;
 }
 
 async function cardsInfo(ids) {
@@ -335,9 +378,10 @@ async function sync(refetch = true, all = false) {
     await flushTags();
     online = true; retryAt = 0;
     if (refetch) {
-      const fresh = await fetchDeck();
+      const got = await fetchDeck(), fresh = got.today;
       lastFetch = Date.now();
       const pending = new Set(queue.map((a) => a.cardId));
+      ahead = got.ahead.filter((c) => !pending.has(c.id)); saveAhead();   // Anki's own schedule replaces any offline repeats
       if (stats.day !== today()) stats = { day: today(), reviewed: 0, best: 0, correct: 0 };
       if (practice) { // refresh the parked review session; leave the practice deck alone
         const s = practice.saved;
@@ -396,7 +440,7 @@ function makeCard(c, isNext) {
   el.querySelector('.a').innerHTML = c.a;
   formatCode(el.querySelector('.body'), langOf(c), true);
   el.querySelector('.tag').textContent = (c.topic ? topicName(c.topic) : (c.deck || '').split('::').pop())
-    + (practice ? (c.why ? ` · ${c.why}` : ' · practice') : c.isNew ? ' · new' : c.learn ? ' · learning' : '');
+    + (practice ? (c.why ? ` · ${c.why}` : ' · practice') : c.repeat ? ' · offline repeat' : c.isNew ? ' · new' : c.learn ? ' · learning' : '');
   const b = el.querySelector('.exb');
   b.addEventListener('pointerdown', (e) => e.stopPropagation());
   b.addEventListener('click', (e) => { e.stopPropagation(); openExplain(c); });
@@ -461,9 +505,12 @@ function showDone() {
   const others = cfg.topic ? view().length === 0 && deck.length : 0;
   $('#refresh').textContent = others ? 'Show all topics' : 'Check for more';
   if (others) { $('#doneStats').textContent = `No ${topicName(cfg.topic)} cards left · ${others} in other topics`; return; }
+  // what's already on the phone for tomorrow, so you know you can study without the Mac
+  const tmr = ahead.filter((c) => c.day === dayAfter(ankiDay(), 1)).length;
+  const later = tmr ? ` · ${tmr} card${tmr === 1 ? '' : 's'} ready for tomorrow` : '';
   $('#doneStats').textContent = stats.reviewed
-    ? `${stats.reviewed} reviewed today · ${Math.round((stats.correct / stats.reviewed) * 100)}% recalled · best combo ×${stats.best}`
-    : (cfg.url || cfg.demo ? 'Nothing due right now.' : 'Connect to AnkiConnect in settings to start.');
+    ? `${stats.reviewed} reviewed today · ${Math.round((stats.correct / stats.reviewed) * 100)}% recalled · best combo ×${stats.best}${later}`
+    : (cfg.url || cfg.demo ? 'Nothing due right now.' + later : 'Connect to AnkiConnect in settings to start.');
   if (stats.reviewed && !showDone.shown) { showDone.shown = true; celebrate(1); }
 }
 
@@ -842,8 +889,10 @@ function answer(ease, dir, px, py) {
   lastAnswerAt = Date.now();
   const card = cur, el = curEl;
   const st = practice ? practice.stats : stats;
-  const h = { uid: ++uidSeq, card: { ...card }, ease, dir, combo, doneCount, stats: { ...st }, reinserted: null };
-  if (!cfg.demo && !practice) queue.push({ uid: h.uid, cardId: card.id, ease, t: Date.now() });   // practice never reaches Anki
+  const h = { uid: ++uidSeq, card: { ...card }, ease, dir, combo, doneCount, stats: { ...st }, reinserted: null, aheadOut: [], aheadIn: null };
+  // practice never reaches Anki, and neither do offline repeats: Anki only gets a card's first answer, since it
+  // stamps every answer with the moment it arrives, and two at once would wreck that card's schedule
+  if (!cfg.demo && !practice && !card.repeat) queue.push({ uid: h.uid, cardId: card.id, ease, t: Date.now() });
   const at = deck.indexOf(card); deck.splice(at < 0 ? 0 : at, 1);
   closeExplain(true);
 
@@ -861,6 +910,18 @@ function answer(ease, dir, px, py) {
       const again = { ...card, ...ns, isNew: false, learn: true, next: null, notBefore: Date.now() + ns.wait * 60e3 };
       deck.splice(posAfter(3), 0, again); h.reinserted = again;
     } else doneCount++;
+    if (!card.repeat) {
+      // Anki reschedules this card from this answer, so drop any copy downloaded for later this week, and
+      // (in case you're still offline then) bring it back on the day Anki said, as an offline repeat
+      h.aheadOut = ahead.filter((c) => c.id === card.id);
+      if (h.aheadOut.length) ahead = ahead.filter((c) => c.id !== card.id);
+      const d = !ns && card.next ? labelDays(card.next[ease - 1]) : 0;
+      if (d >= 1 && d <= AHEAD) {
+        h.aheadIn = { ...card, repeat: true, isNew: false, learn: false, phase: 'review', step: 0, next: null, notBefore: 0, day: dayAfter(ankiDay(), d) };
+        ahead.push(h.aheadIn);
+      }
+      if (h.aheadIn || h.aheadOut.length) saveAhead();
+    }
   }
 
   st.reviewed++; if (ease > 1) st.correct++;
@@ -1000,7 +1061,7 @@ function celebrate(tier = 1) {
 /* ---------- undo ---------- */
 function canUndo() {
   const h = history[history.length - 1];
-  return !!h && (cfg.demo || !!practice || queue.some((a) => a.uid === h.uid));
+  return !!h && (cfg.demo || !!practice || !!h.card.repeat || queue.some((a) => a.uid === h.uid));
 }
 function updateUndo() {
   const u = $('#undo'), on = canUndo();
@@ -1009,6 +1070,8 @@ function updateUndo() {
 addEventListener('resize', () => fitHeader());
 setInterval(updateUndo, 1000);
 setInterval(() => { if (!cur && view().length && $('#sheet').hidden) render(true); }, 30000);
+// past 4am with the app open: bring in the new day's downloaded cards
+setInterval(() => { if (releaseAhead() && !practice) { render(!cur); setStatus(); } }, 60000);
 
 function undo() {
   const h = history[history.length - 1];
@@ -1017,6 +1080,9 @@ function undo() {
   history.pop();
   queue = queue.filter((a) => a.uid !== h.uid);
   if (h.reinserted) { const i = deck.indexOf(h.reinserted); if (i >= 0) deck.splice(i, 1); }
+  if (h.aheadIn) ahead = ahead.filter((c) => c !== h.aheadIn);
+  if (h.aheadOut && h.aheadOut.length) ahead.push(...h.aheadOut);
+  if (h.aheadIn || (h.aheadOut && h.aheadOut.length)) saveAhead();
   deck.unshift(h.card);
   combo = h.combo; doneCount = h.doneCount;
   if (practice) practice.stats = h.stats; else { stats = h.stats; LS.set('stats', stats); }
@@ -1474,8 +1540,10 @@ const DEMO = [
   deck = (await IDB.get('deck')) || [];
   queue = (await IDB.get('queue')) || [];
   tagQueue = (await IDB.get('tags')) || [];
+  ahead = (await IDB.get('ahead')) || [];
   const meta = (await IDB.get('meta')) || {};
   doneCount = meta.doneCount || 0; total = meta.total || deck.length; combo = meta.combo || 0;
+  releaseAhead();
   if (stats.day !== (LS.get('stats', {}).day)) { doneCount = 0; total = deck.length; }
   render(true); showCombo();
   if (cfg.demo) { if (!deck.length) $('#sDemo').onclick(); return setStatus(); }
@@ -1500,8 +1568,11 @@ addEventListener('pagehide', takeBackIfLeaving);
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') takeBackIfLeaving();
   if (cfg.demo) return;
-  if (document.visibilityState === 'visible') sync(Date.now() - lastFetch > 5 * 60e3 || !deck.length);
-  else { persist(); if (queue.length) flush(true).catch(() => {}); flushTags().catch(() => {}); }  // leaving the app: push everything
+  if (document.visibilityState === 'visible') {
+    if (releaseAhead() && !practice) { render(!cur); setStatus(); }
+    sync(Date.now() - lastFetch > 5 * 60e3 || !deck.length);
+  }
+  else { persist(); saveAhead(true); if (queue.length) flush(true).catch(() => {}); flushTags().catch(() => {}); }  // leaving the app: push everything
 });
 addEventListener('online', () => sync(!deck.length));
 setInterval(() => { if ((queue.length || tagQueue.length) && document.visibilityState === 'visible' && Date.now() > retryAt) sync(false); }, 60000);
