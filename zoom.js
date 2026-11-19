@@ -9,7 +9,8 @@ const Zoom = (() => {
   let src = null, L = 0, T = 0, W = 0, H = 0;                    // the fitted frame on screen
   let s = 1, x = 0, y = 0;                                         // transform on top of the frame
   const pts = new Map();
-  let g = null, lastTap = 0, tapTimer = 0, closing = false;
+  let g = null, closing = false, finishT = 0, tapClose = 0, wasZoomed = false;        // tapClose: when a tap started closing (a 2nd tap soon after zooms instead)
+  const DOUBLE = 260;
 
   const apply = (ms = 0) => {
     box.style.transition = ms ? `transform ${ms}ms ${EASE}, opacity ${ms}ms` : 'none';
@@ -59,16 +60,25 @@ const Zoom = (() => {
     haptic(1); SFX.zoomIn();
   }
 
-  function close(instant) {
+  function close(instant, byTap) {
     if (root.hidden || closing) return;
-    closing = true; clearTimeout(tapTimer); pts.clear(); g = null;
+    closing = true; pts.clear(); g = null; tapClose = byTap ? performance.now() : 0; wasZoomed = s > 1.05;
     if (instant === true) return finish();
     const r = src && src.isConnected ? src.getBoundingClientRect() : null;
-    if (r && r.width && r.bottom > 0 && r.top < innerHeight) { s = r.width / W; x = r.left - L; y = r.top - T; apply(380); }
-    else { scaleAt(s * 0.85, [innerWidth / 2, innerHeight / 2]); apply(300); box.style.opacity = 0; }   // its spot is gone: shrink and fade
-    fade(scrim, 0, 320); fade(hint, 0, 150);
+    if (r && r.width && r.bottom > 0 && r.top < innerHeight) { s = r.width / W; x = r.left - L; y = r.top - T; apply(300); }
+    else { scaleAt(s * 0.85, [innerWidth / 2, innerHeight / 2]); apply(240); box.style.opacity = 0; }   // its spot is gone: shrink and fade
+    fade(scrim, 0, 260); fade(hint, 0, 150);
     haptic(1); SFX.zoomOut();
-    setTimeout(finish, 390);
+    finishT = setTimeout(finish, 310);
+  }
+  // a second tap right after the one that started closing: it was a double-tap, so stop closing and
+  // zoom in where it landed (or, if it was zoomed in, go back to fit)
+  function zoomInstead(p) {
+    clearTimeout(finishT); closing = false; tapClose = 0;
+    box.style.opacity = 1; fade(scrim, 1, 200);
+    s = 1; x = 0; y = 0;
+    if (!wasZoomed) { scaleAt(2.6, p); clamp(); }
+    apply(340); SFX.pick(!wasZoomed); haptic(1);
   }
   function finish() {
     root.hidden = true; box.replaceChildren();
@@ -82,14 +92,16 @@ const Zoom = (() => {
   }
 
   root.addEventListener('pointerdown', (e) => {
-    if (closing) return;
+    if (closing) {
+      if (tapClose && performance.now() - tapClose < DOUBLE && !e.target.closest('.zx')) zoomInstead([e.clientX, e.clientY]);
+      return;
+    }
     if (e.target.closest('.zx')) { close(); return; }
     try { root.setPointerCapture(e.pointerId); } catch {}
     pts.set(e.pointerId, [e.clientX, e.clientY]);
     if (pts.size === 2) {
       const [a, b] = [...pts.values()];
       g = { kind: 'pinch', d0: dist(a, b), m0: mid(a, b), from: { s, x, y } };
-      clearTimeout(tapTimer); lastTap = 0;
     } else if (pts.size === 1) {
       g = { kind: 'one', x0: e.clientX, y0: e.clientY, from: { s, x, y }, moved: false, mode: null, hist: [[e.clientX, e.clientY, performance.now()]] };
     }
@@ -131,14 +143,8 @@ const Zoom = (() => {
       return;
     }
     const d = g; g = null;
-    if (!d.moved) {                                                 // tap: once closes, twice zooms
-      const now = performance.now();
-      if (now - lastTap < 300) {
-        clearTimeout(tapTimer); lastTap = 0;
-        if (s > 1.05) { s = 1; x = 0; y = 0; apply(380); SFX.pick(false); }
-        else { scaleAt(Math.min(MAX, 2.6), [e.clientX, e.clientY]); clamp(); apply(380); SFX.pick(true); }
-        haptic(1);
-      } else { lastTap = now; tapTimer = setTimeout(close, 300); }
+    if (!d.moved) {
+      close(false, true);                                           // tap closes at once; a quick second tap makes it a zoom
       return;
     }
     if (d.mode === 'dismiss') {
