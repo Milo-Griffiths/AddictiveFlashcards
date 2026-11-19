@@ -40,7 +40,7 @@ const IDB = (() => {
 
 const cfg = Object.assign(
   { url: '', key: '', deck: '', newLimit: 20, revLimit: 300, ankiweb: true, sound: true, haptics: true, demo: false, topic: '',
-    autoEx: 'hard', exSkipRead: true, pTopics: [], pSize: 50, pNew: false, pMode: 'random', mixNew: true, exams: {} },
+    autoEx: 'hard', exSkipRead: true, pTopics: [], pSize: 50, pNew: false, pMode: 'random', mixNew: true, exams: {}, lecture: '', pLectures: [] },
   LS.get('cfg', {})
 );
 if (cfg.v !== 2) { cfg.sound = true; cfg.haptics = true; cfg.v = 2; }
@@ -91,7 +91,13 @@ let appTime = LS.get('appTime', {}), shownAt = Date.now();   // all-time bests (
 if (stats.day !== today()) stats = { day: today(), reviewed: 0, best: 0, correct: 0 };
 const TOPICS = { Architecture: 'Architecture', Haskell: 'Haskell', C: 'C', SoftwareTools: 'Software Tools', Maths: 'Maths', Psychology: 'Psychology', Geography: 'Geography' };
 const topicName = (t) => TOPICS[t] || t;
-const inTopic = (c) => !!practice || !cfg.topic || c.topic === cfg.topic;
+// Lectures come from note tags Lecture::<Topic>::<NN>_<Title>, e.g. Lecture::C::11_Pointers; a card keeps
+// the part after "Lecture::" (C::11_Pointers) as `lec`.
+const lecNum = (k) => { const m = /::(\d+)_/.exec(k || ''); return m ? +m[1] : 999; };
+const lecTitle = (k) => (k || '').split('::').pop().replace(/^\d+_/, '').replace(/_/g, ' ');
+const lecName = (k) => (lecNum(k) < 999 ? `${lecNum(k)} · ` : '') + lecTitle(k);
+const byLec = (a, b) => lecNum(a) - lecNum(b) || a.localeCompare(b);
+const inTopic = (c) => !!practice || ((!cfg.topic || c.topic === cfg.topic) && (!cfg.lecture || c.lec === cfg.lecture));
 const view = () => deck.filter(inTopic);
 // index in `deck` just before the (n+1)-th card of the current topic, for re-inserting "again" cards
 function posAfter(n) {
@@ -309,12 +315,14 @@ async function cardsInfo(ids) {
 
 // Turns AnkiConnect cardsInfo rows into our card objects (topic + flag from note tags, explanation, inlined images).
 async function buildCards(info, ex, extra = () => ({})) {
-  const noteIds = [...new Set(info.map((c) => c.note))], topicOf = {}, bad = new Set(), reps = {};
+  const noteIds = [...new Set(info.map((c) => c.note))], topicOf = {}, lecOf = {}, bad = new Set(), reps = {};
   for (let i = 0; i < noteIds.length; i += 200) {
     for (const n of await anki('notesInfo', { notes: noteIds.slice(i, i + 200) }, 20000)) {
       const tags = n.tags || [];
       const t = tags.find((x) => x.startsWith('Topic::'));
       if (t) topicOf[n.noteId] = t.slice(7);
+      const l = tags.find((x) => x.startsWith('Lecture::'));
+      if (l) lecOf[n.noteId] = l.slice(9);
       if (tags.some((x) => x.toLowerCase() === BAD_TAG.toLowerCase())) bad.add(n.noteId);
       const lower = tags.map((x) => x.toLowerCase());
       reps[n.noteId] = Object.keys(REPORTS).filter((k) => lower.includes(REPORTS[k][1].toLowerCase()));
@@ -329,7 +337,7 @@ async function buildCards(info, ex, extra = () => ({})) {
   const cards = info.map((c) => ({
     id: c.cardId, note: c.note, deck: c.deckName, isNew: c.type === 0, learn: c.type === 1 || c.type === 3,
     phase: 'review', notBefore: 0,
-    topic: topicOf[c.note] || null, ex: (ex || {})[c.note] || null, bad: bad.has(c.note), reports: reps[c.note] || [],
+    topic: topicOf[c.note] || null, ex: (ex || {})[c.note] || null, bad: bad.has(c.note), reports: reps[c.note] || [], lec: lecOf[c.note] || null,
     q: clean(c.question), a: splitAnswer(c.question, c.answer),
     next: (c.nextReviews || []).map((s) => s.replace(/[⁨⁩]/g, '')),
     ...extra(c),
@@ -433,7 +441,7 @@ function setStatus() {
   el.setAttribute('aria-label', `${left} cards left` + (waiting ? `, ${waiting} waiting to sync` : '') + '. Tap to sync now.');
   // the topic / practice button says what you're looking at
   const b = $('#topicBtn');
-  $('#topicLbl').textContent = practice ? 'Practice' : cfg.topic ? topicName(cfg.topic) : 'All topics';
+  $('#topicLbl').textContent = practice ? 'Practice' : cfg.topic ? topicName(cfg.topic) + (cfg.lecture ? ` · ${lecNum(cfg.lecture) < 999 ? 'L' + lecNum(cfg.lecture) : lecTitle(cfg.lecture)}` : '') : 'All topics';
   b.className = 'tbtn' + (practice ? ' practice' : cfg.topic ? ' topic' : '');
   fitHeader();
 }
@@ -526,7 +534,7 @@ function showDone() {
   }
   const others = cfg.topic ? view().length === 0 && deck.length : 0;
   $('#refresh').textContent = others ? 'Show all topics' : 'Check for more';
-  if (others) { $('#doneStats').textContent = `No ${topicName(cfg.topic)} cards left · ${others} in other topics`; return; }
+  if (others) { $('#doneStats').textContent = `No ${cfg.lecture ? lecName(cfg.lecture) : topicName(cfg.topic)} cards left · ${others} in other topics`; return; }
   // what's already on the phone for tomorrow, so you know you can study without the Mac
   const tmr = ahead.filter((c) => c.day === dayAfter(ankiDay(), 1)).length;
   const later = tmr ? ` · ${tmr} card${tmr === 1 ? '' : 's'} ready for tomorrow` : '';
@@ -787,10 +795,36 @@ function openTopics() {
     box.appendChild(b);
   }
   if (list.length === 1) box.insertAdjacentHTML('beforeend', '<p class="muted">Topics appear once your cards have Topic:: tags.</p>');
+  drawReviewLectures();
   $('#topics').hidden = false;
 }
+// the chosen topic's lectures that have cards today, as small chips under the topics
+function drawReviewLectures() {
+  const box = $('#lecList'), counts = {};
+  for (const c of deck) if (cfg.topic && c.topic === cfg.topic && c.lec) counts[c.lec] = (counts[c.lec] || 0) + 1;
+  const keys = Object.keys(counts).sort(byLec);
+  box.hidden = !keys.length; box.innerHTML = '';
+  if (!keys.length) return;
+  box.insertAdjacentHTML('beforeend', `<p class="lechead">${esc2(topicName(cfg.topic))} lectures</p>`);
+  const wrap = document.createElement('div'); wrap.className = 'lecs'; box.appendChild(wrap);
+  for (const [k, name, n] of [['', 'All', keys.reduce((a, k2) => a + counts[k2], 0)], ...keys.map((k2) => [k2, lecName(k2), counts[k2]])]) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'lec' + ((cfg.lecture || '') === k ? ' on' : '');
+    b.innerHTML = '<span></span><b></b>'; b.firstChild.textContent = name; b.lastChild.textContent = n;
+    b.onclick = () => setLecture(k);
+    wrap.appendChild(b);
+  }
+}
+const esc2 = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+// Choosing a topic with lectures keeps the sheet open so you can narrow it to one; otherwise it closes.
 function setTopic(t) {
-  cfg.topic = t; saveCfg();
+  cfg.topic = t; cfg.lecture = ''; saveCfg();
+  cur = null; render(true); haptic(1); SFX.pick();
+  if (t && deck.some((c) => c.topic === t && c.lec)) { openTopics(); return; }
+  $('#topics').hidden = true;
+}
+function setLecture(k) {
+  cfg.lecture = k; saveCfg();
   $('#topics').hidden = true;
   cur = null; render(true); haptic(1); SFX.pick();
 }
@@ -803,8 +837,11 @@ const shuffle = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = (Mat
 // no topics picked = every topic. "Hardest" needs answer history, so it never includes unstudied cards.
 const hardMode = () => cfg.pMode === 'hard';
 const withNew = () => cfg.pNew && !hardMode();
-const practiceQuery = (topics) => (cfg.deck ? `deck:${q(cfg.deck)} ` : '')
-  + (topics.length ? '(' + topics.map((t) => 'tag:' + q('Topic::' + t)).join(' OR ') + ') ' : '')
+// lectures only narrow practice when exactly one topic is picked (they're shown under it)
+const pLecs = (topics) => (topics.length === 1 ? cfg.pLectures.filter((k) => k.startsWith(topics[0] + '::')) : []);
+const practiceQuery = (topics, lecs = pLecs(topics)) => (cfg.deck ? `deck:${q(cfg.deck)} ` : '')
+  + (lecs.length ? '(' + lecs.map((k) => 'tag:' + q('Lecture::' + k)).join(' OR ') + ') '
+    : topics.length ? '(' + topics.map((t) => 'tag:' + q('Topic::' + t)).join(' OR ') + ') ' : '')
   + '-is:suspended' + (withNew() ? '' : ' -is:new');
 
 // How badly you've been doing on a card, 0..1, from Anki's review log. Recent answers count most
@@ -843,7 +880,10 @@ function drawMode() {
 function updateStartLabel() {
   const picked = cfg.pTopics.filter((t) => drawnTopics.includes(t));
   const n = cfg.pSize ? String(cfg.pSize) : 'all';
-  $('#pStart').textContent = `Start · ${n} ${hardMode() ? 'hardest' : 'random'} from ${picked.length ? picked.map(topicName).join(', ') : 'all topics'}`;
+  const lecs = pLecs(picked).sort(byLec);
+  const from = lecs.length ? `${topicName(picked[0])} ${lecs.length > 3 ? `(${lecs.length} lectures)` : lecs.map((k) => 'L' + (lecNum(k) < 999 ? lecNum(k) : lecTitle(k))).join(', ')}`
+    : picked.length ? picked.map(topicName).join(', ') : 'all topics';
+  $('#pStart').textContent = `Start · ${n} ${hardMode() ? 'hardest' : 'random'} from ${from}`;
 }
 for (const b of $('#pMode').children) b.onclick = () => { cfg.pMode = b.dataset.mode; saveCfg(); drawMode(); refreshPracticeCounts(); haptic(1); SFX.pick(); };
 let drawnTopics = [];
@@ -857,23 +897,51 @@ function drawPracticeTopics(list, counts) {
     b.firstChild.textContent = topicName(t); b.lastChild.textContent = counts[t] ?? '';
     b.onclick = () => {
       cfg.pTopics = cfg.pTopics.includes(t) ? cfg.pTopics.filter((x) => x !== t) : [...cfg.pTopics, t];
-      saveCfg(); b.classList.toggle('on'); updateStartLabel(); haptic(1); SFX.pick(b.classList.contains('on'));
+      saveCfg(); b.classList.toggle('on'); drawPracticeLectures(); updateStartLabel(); haptic(1); SFX.pick(b.classList.contains('on'));
     };
     box.appendChild(b);
   }
   if (!box.children.length) box.innerHTML = '<p class="muted">Topics appear once your cards have Topic:: tags.</p>';
+  drawPracticeLectures();
   updateStartLabel();
+}
+// With one topic picked, its lectures appear as small chips: pick any number, or none for the whole topic.
+function drawPracticeLectures() {
+  const box = $('#pLectures'), picked = cfg.pTopics.filter((t) => drawnTopics.includes(t));
+  const all = LS.get('plecs', {}), t = picked.length === 1 ? picked[0] : null;
+  const keys = t ? Object.keys(all).filter((k) => k.startsWith(t + '::') && all[k] !== 0).sort(byLec) : [];
+  box.hidden = !keys.length; box.innerHTML = '';
+  if (!keys.length) return;
+  box.insertAdjacentHTML('beforeend', `<p class="lechead">${esc2(topicName(t))} lectures <span>· none picked = all of them</span></p>`);
+  const wrap = document.createElement('div'); wrap.className = 'lecs'; box.appendChild(wrap);
+  for (const k of keys) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'lec' + (cfg.pLectures.includes(k) ? ' on' : '');
+    b.innerHTML = '<span></span><b></b>'; b.firstChild.textContent = lecName(k); b.lastChild.textContent = all[k] ?? '';
+    b.onclick = () => {
+      cfg.pLectures = cfg.pLectures.includes(k) ? cfg.pLectures.filter((x) => x !== k) : [...cfg.pLectures, k];
+      saveCfg(); b.classList.toggle('on'); updateStartLabel(); haptic(1); SFX.pick(b.classList.contains('on'));
+    };
+    wrap.appendChild(b);
+  }
 }
 // real per-topic card counts from Anki when it's reachable (cached for offline)
 async function refreshPracticeCounts() {
   if (cfg.demo || !cfg.url) return;
   try {
     const topics = (await anki('getTags', {}, 5000)).filter((t) => /^Topic::[^:]+$/.test(t)).map((t) => t.slice(7));
-    const res = await anki('multi', { actions: topics.map((t) => ({ action: 'findCards', params: { query: practiceQuery([t]) } })) }, 10000);
+    const res = await anki('multi', { actions: topics.map((t) => ({ action: 'findCards', params: { query: practiceQuery([t], []) } })) }, 10000);
     const counts = {};
     topics.forEach((t, i) => { const r = res[i]; const ids = r && (r.result !== undefined ? r.result : r); counts[t] = Array.isArray(ids) ? ids.length : 0; });
     topics.sort((a, b) => (Object.keys(TOPICS).indexOf(a) + 1 || 99) - (Object.keys(TOPICS).indexOf(b) + 1 || 99));
     LS.set('ptopics', topics); LS.set('pcounts', counts);
+    // and each lecture's count, for the lecture chips
+    const lecs = (await anki('getTags', {}, 5000)).filter((x) => x.startsWith('Lecture::')).map((x) => x.slice(9));
+    if (lecs.length) {
+      const lr = await anki('multi', { actions: lecs.map((k) => ({ action: 'findCards', params: { query: practiceQuery([], [k]) } })) }, 15000);
+      const lc = {}; lecs.forEach((k, i) => { lc[k] = resIds(lr[i]).length; });
+      LS.set('plecs', lc);
+    } else LS.set('plecs', {});
     if (!$('#topics').hidden && !practice) drawPracticeTopics(topics, counts);
   } catch {}
 }
@@ -912,7 +980,8 @@ async function loadPracticeCards(topics) {
   // offline: whatever we already have on the phone for these topics
   const have = new Map();
   for (const c of [...Object.values(pool), ...(practice ? practice.saved.deck : deck)]) {
-    if ((!topics.length || topics.includes(c.topic)) && (withNew() || !c.isNew) && (!hardMode() || scores[c.id])) have.set(c.id, c);
+    const lecs = pLecs(topics);
+    if ((!topics.length || topics.includes(c.topic)) && (!lecs.length || lecs.includes(c.lec)) && (withNew() || !c.isNew) && (!hardMode() || scores[c.id])) have.set(c.id, c);
   }
   if (have.size) toast('Offline · practising cards saved on this phone');
   if (!hardMode()) return shuffle([...have.values()]).slice(0, want);
