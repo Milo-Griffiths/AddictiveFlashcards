@@ -16,13 +16,17 @@ const findAct = (query) => ({ action: 'findCards', params: { query } });
 
 async function gatherStats() {
   const scope = cfg.deck ? `deck:${q(cfg.deck)}` : 'deck:*', live = `${scope} -is:suspended`;
-  const topics = (await anki('getTags', {}, 8000)).filter((t) => /^Topic::[^:]+$/.test(t)).map((t) => t.slice(7));
+  const tags = await anki('getTags', {}, 8000);
+  const topics = tags.filter((t) => /^Topic::[^:]+$/.test(t)).map((t) => t.slice(7));
+  const lecTags = tags.filter((t) => /^Lecture::[^:]+::.+$/.test(t)).map((t) => t.slice(9));
   const acts = [findAct(scope), findAct(`${live} is:due`)];
   for (let d = 1; d < 30; d++) acts.push(findAct(`${live} prop:due=${d}`));
   for (const t of topics) {
     const tq = `${live} tag:${q('Topic::' + t)}`;
     acts.push(findAct(tq), findAct(`${tq} is:new`), findAct(`${tq} prop:ivl>=21`), findAct(`${tq} introduced:1`));
   }
+  const lecAt = acts.length;
+  for (const k of lecTags) { const lq = `${live} tag:${q('Lecture::' + k)}`; acts.push(findAct(lq), findAct(`${lq} is:new`), findAct(`${lq} prop:ivl>=21`)); }
   const res = (await anki('multi', { actions: acts }, 30000)).map(resIds);
   const forecast = [res[1].length, ...res.slice(2, 31).map((r) => r.length)];
   const topicOf = new Map(), T = [];
@@ -33,6 +37,15 @@ async function gatherStats() {
     for (const id of all) topicOf.set(id, row);
     T.push(row);
   });
+  // lectures: the same known / learning / new split, plus recall and struggling cards, per lecture
+  const lecOf = new Map(), L = [];
+  lecTags.forEach((k, i) => {
+    const [all, fresh, known] = res.slice(lecAt + i * 3, lecAt + i * 3 + 3);
+    if (!all.length) return;
+    const row = { k, t: k.split('::')[0], total: all.length, unseen: fresh.length, known: known.length, rev: 0, ok: 0, hard: 0 };
+    for (const id of all) lecOf.set(id, row);
+    L.push(row);
+  });
   T.sort((a, b) => (Object.keys(TOPICS).indexOf(a.t) + 1 || 99) - (Object.keys(TOPICS).indexOf(b.t) + 1 || 99));
 
   const logs = await anki('getReviewsOfCards', { cards: res[0].map(String) }, 60000);
@@ -40,15 +53,19 @@ async function gatherStats() {
   let reviews = 0, ms = 0;
   const seq = [];                                              // [time, ease] of every answer, for the best combo
   for (const [cid, list] of Object.entries(logs || {})) {
-    const row = topicOf.get(+cid);
+    const row = topicOf.get(+cid), lrow = lecOf.get(+cid);
+    let missed = 0;
     for (const r of list) {
       if (!(r.ease >= 1)) continue;                            // manual reschedules aren't reviews
       reviews++; ms += r.time || 0; seq.push([r.id, r.ease]);
       const d = days[dayKey(r.id)] || (days[dayKey(r.id)] = [0, 0, 0, 0]);   // [cards, ms, right, answers with no time]
       d[0]++; d[1] += r.time || 0; if (r.ease > 1) d[2]++; if (!r.time) d[3]++;
+      if (r.ease === 1) missed++;
+      if (lrow && r.id >= t30 && r.type === 1) { lrow.rev++; if (r.ease > 1) lrow.ok++; }
       if (r.ease === 1) { const m = misses.get(+cid) || [0, 0]; m[0]++; m[1] = Math.max(m[1], r.id); misses.set(+cid, m); }
       if (r.id >= t30 && r.type === 1) { buttons[r.ease - 1]++; if (row) { row.rev++; if (r.ease > 1) row.ok++; } }
     }
+    if (lrow && missed >= 3) lrow.hard++;
   }
   // best combo ever: the longest run of Good / Easy answers in a row, the same rule as the in-app combo
   seq.sort((a, b) => a[0] - b[0]);
@@ -65,7 +82,7 @@ async function gatherStats() {
     }
     hard.sort((a, b) => b.n - a.n);
   }
-  return { at: Date.now(), days, forecast, topics: T, buttons, reviews, ms, hard, bestRun };
+  return { at: Date.now(), days, forecast, topics: T, lectures: L, buttons, reviews, ms, hard, bestRun };
 }
 
 // The demo deck has no history, so make up a believable one.
@@ -80,7 +97,15 @@ function demoStats() {
     const unseen = Math.round(total * rnd() * 0.6), known = Math.round((total - unseen) * (0.3 + rnd() * 0.4)), rev = 40 + Math.round(rnd() * 200);
     return { t, total, unseen, known, intro: 0, rev, ok: Math.round(rev * (0.72 + rnd() * 0.22)) };
   });
-  return { at: Date.now(), days, demo: true, forecast: Array.from({ length: 30 }, (_, i) => Math.round((i ? 20 : 60) + rnd() * 60 * Math.exp(-i / 14))),
+  const names = { Architecture: ['Boolean Algebra', 'Logic Gates', 'Adders', 'Flip-Flops', 'Verilog', 'Pipelines'], C: ['Types', 'Control Flow', 'Arrays', 'Strings', 'Pointers', 'Memory'],
+    Haskell: ['Types', 'Lists', 'Recursion', 'Higher-Order Functions', 'Type Classes'], SoftwareTools: ['Shell', 'Git', 'Make', 'Debugging'], Maths: ['Sets', 'Relations', 'Functions', 'Proof', 'Induction'] };
+  const lectures = [];
+  for (const [t, list] of Object.entries(names)) list.forEach((n, i) => {
+    const total = 20 + Math.round(rnd() * 40), unseen = i >= list.length - 1 ? total : Math.round(total * rnd() * 0.4 * (i / list.length));
+    const known = Math.round((total - unseen) * (0.15 + rnd() * 0.7)), rev = Math.round(rnd() * 40);
+    lectures.push({ k: `${t}::${String(i + 1).padStart(2, '0')}_${n.replace(/ /g, '_')}`, t, total, unseen, known, rev, ok: Math.round(rev * (0.6 + rnd() * 0.38)), hard: rnd() < 0.25 ? 1 + Math.round(rnd() * 4) : 0 });
+  });
+  return { at: Date.now(), days, demo: true, lectures, forecast: Array.from({ length: 30 }, (_, i) => Math.round((i ? 20 : 60) + rnd() * 60 * Math.exp(-i / 14))),
     topics: T, buttons: [180, 90, 1150, 140], reviews: 9120, bestRun: 34, ms: 9120 * 8500,
     hard: [{ id: 0, n: 7, text: 'What does the ALU control line SUB do in a ripple-carry adder?', topic: 'Architecture' },
       { id: 0, n: 5, text: 'Write foldr in terms of its recursion pattern.', topic: 'Haskell' },
@@ -162,6 +187,7 @@ function draw(animate) {
     secToday(todayN, todayOk, st),
     secActivity(today, todayN, dayMs(today)),
     secTopics(),
+    secLectures(),
     secForecast(),
     secStruggle(),
     secRecords(st, bestCombo, todayN),
@@ -269,6 +295,42 @@ function secTopics() {
     <p class="muted fine">Known: you'll next see it in 3+ weeks. Recalled: reviews you got right in the last 30 days.</p>`, ' id="stTopics"');
 }
 
+// Lectures: how well you know each one, grouped by topic. The weakest few are called out at the top, and
+// tapping a lecture starts a practice round of just its cards.
+const lecRecall = (r) => (r.rev >= 5 ? r.ok / r.rev : null);
+function lecWeak(r) {          // lower is weaker; only lectures you've mostly started count as weak spots
+  if (r.total - r.unseen < r.total * 0.5) return null;
+  const rc = lecRecall(r);
+  return (r.known / r.total) * 0.5 + (rc === null ? 0.5 : rc) * 0.5 - Math.min(r.hard, 5) * 0.06;
+}
+function lecRow(r, i, showTopic) {
+  const learning = r.total - r.unseen - r.known, rc = lecRecall(r), n = lecNum(r.k);
+  const seen = r.total - r.unseen;
+  const note = !seen ? 'not started' : seen < r.total * 0.5 ? `${seen} of ${r.total} seen${r.hard ? ` · <span class="warn">${r.hard} struggling</span>` : ''}`
+    : `${pct(r.known, r.total)}% known${rc !== null ? ` · <span class="${rc < 0.8 ? 'warn' : ''}">${pct(r.ok, r.rev)}% recalled</span>` : ''}${r.hard ? ` · <span class="warn">${r.hard} struggling</span>` : ''}`;
+  return `<button type="button" class="lrow${r.unseen === r.total ? ' unstarted' : ''}" data-lec="${esc(r.k)}" style="--d:${i * 30}ms">
+    <span class="ln">${showTopic ? esc(topicName(r.t)) + ' ' : ''}${n < 999 ? 'L' + n : '·'}</span>
+    <span class="lt">${esc(lecTitle(r.k))}</span>
+    <span class="stack"><i class="k" style="--w:${r.known / r.total}"></i><i class="y" style="--w:${learning / r.total}"></i><i class="u" style="--w:${r.unseen / r.total}"></i></span>
+    <small>${note}</small></button>`;
+}
+function secLectures() {
+  const L = S.lectures || [];
+  if (!L.length) return '';
+  const open = LS.get('stLecOpen', []);
+  const weak = L.filter((r) => lecWeak(r) !== null && lecWeak(r) < 0.6).sort((a, b) => lecWeak(a) - lecWeak(b)).slice(0, 3);
+  const top = weak.length ? `<h4 class="first">Needs work</h4><div class="llist">${weak.map((r, i) => lecRow(r, i, true)).join('')}</div>` : '';
+  const groups = S.topics.map((t) => {
+    const rows = L.filter((r) => r.t === t.t).sort((a, b) => byLec(a.k, b.k));
+    if (!rows.length) return '';
+    const started = rows.filter((r) => r.unseen < r.total).length;
+    return `<details class="lgroup" data-topic="${esc(t.t)}"${open.includes(t.t) ? ' open' : ''}>
+      <summary><b>${esc(topicName(t.t))}</b><span>${started} of ${rows.length} started</span></summary>
+      <div class="llist">${rows.map((r, i) => lecRow(r, i, false)).join('')}</div></details>`;
+  }).join('');
+  return sec('Lectures', `<p class="muted fine top">How well you know each lecture. Tap one to practise just its cards.</p>${top}${weak.length ? '<h4>By topic</h4>' : ''}${groups}`, ' id="stLectures"');
+}
+
 function secForecast() {
   const n = LS.get('stRange', 7), f = S.forecast.slice(0, n), max = Math.max(1, ...f), today = dayKey(Date.now());
   const date = (i, o) => new Date(addDays(today, i) + 'T12:00').toLocaleDateString('en-GB', o);
@@ -373,9 +435,29 @@ stBody.addEventListener('click', async (e) => {
     haptic(1);
     return;
   }
+  const lec = t.closest('[data-lec]');
+  if (lec) { practiseLecture(lec.dataset.lec); return; }
   const card = t.closest('[data-card]');
   if (card) openStruggler(+card.dataset.card);
 });
+// opening / closing a topic's lecture list: remembered, with the same sounds as other panels
+stBody.addEventListener('toggle', (e) => {
+  const g = e.target.closest && e.target.closest('.lgroup');
+  if (!g) return;
+  const open = new Set(LS.get('stLecOpen', []));
+  if (g.open) open.add(g.dataset.topic); else open.delete(g.dataset.topic);
+  LS.set('stLecOpen', [...open]);
+  if (stOpen) { (g.open ? SFX.open : SFX.close)(); haptic(1); }
+}, true);
+// A random practice round of one lecture's cards (the Practice tab then shows that lecture picked)
+async function practiseLecture(k) {
+  const t = k.split('::')[0];
+  cfg.pTopics = [t]; cfg.pLectures = [k]; saveCfg();
+  const mode = cfg.pMode; cfg.pMode = 'random';
+  closeStats();
+  try { await startPractice([t]); } finally { cfg.pMode = mode; saveCfg(); }
+  if (!practice || practice.topics[0] !== t) toast($('#pMsg').textContent || 'No cards for that lecture on this phone yet');
+}
 // iOS fills an empty date box with today and fires "change" as soon as its picker opens, and again on
 // every scroll of the wheel. So the date box is never rebuilt while you use it (that closed the picker):
 // only the row's badge, pacing line and Remove button update in place. The confirmation sound waits until

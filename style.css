@@ -220,7 +220,7 @@ body:has(#flash.again) #stage { animation: shake .35s; }
 
 /* explain button on revealed cards */
 .card .exb {
-  position: absolute; left: 50%; bottom: 46px; translate: -50% 0; z-index: 5;
+  position: absolute; left: 50%; bottom: 52px; translate: -50% 0; z-index: 5;
   padding: 8px 16px; border-radius: 99px; font-size: 14px; font-weight: 600;
   color: var(--accent); background: rgba(255,201,77,.1); border: 1px solid rgba(255,201,77,.35);
   animation: fadein .3s .15s both;
@@ -580,7 +580,10 @@ svg .dot { fill: currentColor; }
 .repopt.on i { border-color: var(--again); background: var(--again); }
 .repopt.on i::after { content: ""; width: 5px; height: 9px; border: solid var(--bg); border-width: 0 2px 2px 0; transform: translateY(-1px) rotate(45deg); }
 #repDone { margin-top: 4px; }
-.card .foot .iv { margin-left: auto; }
+.card .foot { gap: 8px; white-space: nowrap; }
+.card .foot .tag { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.card .foot .iv { margin-left: auto; flex-shrink: 0; }
+.card .foot .rep { flex-shrink: 0; }
 
 /* ---------- lectures, nested under a topic ---------- */
 #lecList, #pLectures { margin-top: 12px; }
@@ -595,3 +598,31 @@ svg .dot { fill: currentColor; }
 .lec.on b { color: var(--accent); }
 #pLectures .lec.on { border-color: #c49cff; background: rgba(196,156,255,.1); color: #c49cff; }
 #pLectures .lec.on b { color: #c49cff; }
+
+/* ---------- today's mistakes: replay the cards you pressed Again on today ---------- */
+.mistakes { padding: 11px 20px; border-radius: 14px; font-weight: 600; color: var(--again);
+  background: rgba(255,92,122,.08); border: 1px solid rgba(255,92,122,.35); animation: rise .35s .1s cubic-bezier(.2,.9,.3,1) both; }
+.mistakes:active { background: rgba(255,92,122,.18); }
+#pMistakes { width: 100%; }
+
+/* ---------- lecture coverage on the stats page ---------- */
+#stLectures h4.first { margin-top: 0; }
+.lgroup { border-top: 1px solid var(--line); }
+.lgroup:first-of-type { border-top: 0; }
+.lgroup summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 2px; cursor: pointer; list-style: none; }
+.lgroup summary::-webkit-details-marker { display: none; }
+.lgroup summary b { font-size: 15px; font-weight: 600; }
+.lgroup summary span { font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 6px; }
+.lgroup summary span::after { content: ""; width: 7px; height: 7px; border: solid var(--dim); border-width: 0 1.5px 1.5px 0; transform: translateY(-2px) rotate(45deg); transition: transform .2s; }
+.lgroup[open] summary span::after { transform: translateY(1px) rotate(-135deg); }
+.lgroup .llist { padding-bottom: 10px; }
+.llist { display: grid; gap: 2px; }
+.lrow { display: grid; grid-template-columns: auto 1fr 64px; grid-template-rows: auto auto; align-items: center; column-gap: 10px; row-gap: 4px;
+  width: 100%; padding: 8px 10px; margin: 0 -2px; border-radius: 12px; text-align: left; animation: rise .3s var(--d, 0ms) cubic-bezier(.2,.9,.3,1) both; }
+.lrow:active { background: var(--card2); }
+.lrow .ln { font-size: 12px; font-weight: 700; color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.lrow .lt { font-size: 14px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lrow .stack { height: 6px; }
+.lrow small { grid-column: 2 / 4; font-size: 12px; color: var(--dim); }
+.lrow.unstarted .lt { color: var(--dim); }
+.lrow .warn { color: var(--hard); }

@@ -79,6 +79,18 @@ const REPORTS = {
   image: ['Confusing image', 'FlowCards::Report::ConfusingImage'],
 };
 let history = [];     // undo stack
+// Today's mistakes: every card you pressed Again on today (reviews or practice), kept on the phone so you can
+// replay them as practice. {day, cards: {cardId: card}}; it empties itself when Anki's day rolls over at 4am.
+let mistakes = { day: '', cards: {} };
+const todaysMistakes = () => (mistakes.day === ankiDay() ? Object.values(mistakes.cards) : []);
+function addMistake(card) {
+  if (mistakes.day !== ankiDay()) mistakes = { day: ankiDay(), cards: {} };
+  if (mistakes.cards[card.id]) return false;
+  const { why, repeat, notBefore, next, learn, day, ...c } = card;
+  mistakes.cards[card.id] = c; IDB.set('mistakes', mistakes);
+  return true;
+}
+function dropMistake(id) { if (mistakes.cards[id]) { delete mistakes.cards[id]; IDB.set('mistakes', mistakes); } }
 let cur = null, curEl = null, nextEl = null;
 let total = 0, doneCount = 0, combo = 0;
 let online = false, syncing = false, lastFetch = 0, retryAt = 0;
@@ -517,14 +529,19 @@ function updateBar() {
 
 function showDone() {
   $('#done2').hidden = !practice;
+  const nm = todaysMistakes().length, replaying = practice && practice.mode === 'mistakes';
+  $('#doneMistakes').hidden = !nm || (practice && !replaying);
+  $('#doneMistakes').textContent = replaying ? 'Replay them again' : `Replay today's mistakes · ${nm}`;
   $('#done .big').textContent = practice ? 'Practice complete' : 'All caught up';
   if (practice) {
     const s = practice.stats;
     $('#refresh').textContent = 'Practice again';
+    $('#refresh').hidden = replaying;
     $('#doneStats').textContent = `${practice.size} cards · ${s.reviewed ? Math.round((s.correct / s.reviewed) * 100) : 0}% recalled · best combo ×${s.best}`;
     if (!practice.cheered) { practice.cheered = true; celebrate(1); }
     return;
   }
+  $('#refresh').hidden = false;
   const waiting = view().filter((c) => c.notBefore > Date.now());
   if (waiting.length) {
     const mins = Math.max(1, Math.ceil((Math.min(...waiting.map((c) => c.notBefore)) - Date.now() - 20 * 60e3) / 60e3));
@@ -865,6 +882,8 @@ function openPracticePick() {
   drawPracticeTopics(known || [...new Set([...Object.keys(TOPICS).filter((t) => local.includes(t)), ...local])], LS.get('pcounts', {}));
   for (const b of $('#pSize').children) b.classList.toggle('on', +b.dataset.n === cfg.pSize);
   $('#pNew').checked = cfg.pNew; $('#pMsg').textContent = '';
+  const nm = todaysMistakes().length;
+  $('#pMistakes').hidden = !nm; $('#pMistakes').textContent = `Replay today's mistakes · ${nm}`;
   drawMode();
   refreshPracticeCounts();
 }
@@ -1003,13 +1022,22 @@ async function startPractice(topics) {
       : 'No cards for those topics on this phone yet. Connect to Anki once to download them.';
     return;
   }
+  beginPractice(cards, { topics, mode: cfg.pMode });
+}
+// Replay today's mistakes: the cards you pressed Again on today, shuffled, as practice (never sent to Anki)
+function startMistakes() {
+  const cards = todaysMistakes();
+  if (!cards.length) { toast('No mistakes today'); return; }
+  beginPractice(shuffle(cards.map((c) => ({ ...c, why: 'missed today' }))), { topics: [], mode: 'mistakes' }, true);
+}
+function beginPractice(cards, { topics, mode }, rewind) {
   cards = cards.map((c) => ({ ...c, next: null, notBefore: 0, learn: false }));
   if (!practice) practice = { saved: { deck, doneCount, total, combo, history, cur } };
-  Object.assign(practice, { topics, mode: cfg.pMode, size: cards.length, stats: { reviewed: 0, correct: 0, best: 0 }, cheered: false });
+  Object.assign(practice, { topics, mode, size: cards.length, stats: { reviewed: 0, correct: 0, best: 0 }, cheered: false });
   deck = cards; doneCount = 0; total = cards.length; combo = 0; history = []; cur = null;
   document.body.classList.add('practice');
   $('#topics').hidden = true;
-  render(true); showCombo(); updateUndo(); haptic(2); SFX.open();
+  render(true); showCombo(); updateUndo(); haptic(2); if (rewind) SFX.rewind(); else SFX.open();
 }
 function endPractice() {
   if (!practice) return;
@@ -1022,6 +1050,8 @@ function endPractice() {
 $('#pStart').onclick = () => startPractice(cfg.pTopics.filter((t) => drawnTopics.includes(t)));
 $('#pEnd').onclick = endPractice;
 $('#done2').onclick = endPractice;
+$('#doneMistakes').onclick = startMistakes;
+$('#pMistakes').onclick = startMistakes;
 
 let uidSeq = Date.now();
 let lastAnswerAt = 0;   // when the last card was graded (to catch grades made by swiping home)
@@ -1065,6 +1095,7 @@ function answer(ease, dir, px, py) {
     }
   }
 
+  if (ease === 1 && !(practice && practice.mode === 'mistakes')) h.mistake = addMistake(card);
   st.reviewed++; if (ease > 1) st.correct++;
   const broke = ease <= 2 && combo >= 3 ? combo : 0;   // Again and Hard both end the streak
   combo = ease > 2 ? combo + 1 : 0;
@@ -1220,6 +1251,7 @@ function undo() {
   if (!canUndo()) { toast('Already synced to Anki'); history = []; updateUndo(); return; }
   history.pop();
   queue = queue.filter((a) => a.uid !== h.uid);
+  if (h.mistake) dropMistake(h.card.id);
   if (h.reinserted) { const i = deck.indexOf(h.reinserted); if (i >= 0) deck.splice(i, 1); }
   if (h.aheadIn) ahead = ahead.filter((c) => c !== h.aheadIn);
   if (h.aheadOut && h.aheadOut.length) ahead.push(...h.aheadOut);
@@ -1468,6 +1500,11 @@ const SFX = (() => {
       for (let j = 0; j < Math.min(2 + tier * 2, sparkle.length); j++) bell(C(sparkle[j]), { t: land + 0.06 + j * 0.09, dur: 0.6, vol: 0.06, send: 0.6 });
     },
     undo() { tone(700, { dur: 0.16, vol: 0.12, to: 350 }); },
+    // replaying today's mistakes: three quick falling chirps (a tape rewinding), then a bell to start
+    rewind() {
+      [0, 1, 2].forEach((j) => tone(1200 - j * 180, { t: j * 0.055, dur: 0.05, type: 'triangle', vol: 0.07, to: 800 - j * 120 }));
+      bell(C(12), { t: 0.2, dur: 0.7, vol: 0.1 }); bell(C(16), { t: 0.26, dur: 0.8, vol: 0.07 });
+    },
     // enlarging an image: an airy upward glide with a glint on top; putting it back: the same, falling to rest
     zoomIn() { tone(392, { dur: 0.24, vol: 0.06, to: 784, attack: 0.03 }); bell(C(19), { t: 0.1, dur: 0.55, vol: 0.045, send: 0.55 }); },
     zoomOut() { tone(740, { dur: 0.2, vol: 0.05, to: 370, attack: 0.01 }); tone(C(7), { t: 0.15, dur: 0.12, type: 'triangle', vol: 0.05 }); },
@@ -1684,6 +1721,7 @@ const DEMO = [
   queue = (await IDB.get('queue')) || [];
   tagQueue = (await IDB.get('tags')) || [];
   ahead = (await IDB.get('ahead')) || [];
+  mistakes = (await IDB.get('mistakes')) || mistakes;
   const meta = (await IDB.get('meta')) || {};
   doneCount = meta.doneCount || 0; total = meta.total || deck.length; combo = meta.combo || 0;
   releaseAhead();
