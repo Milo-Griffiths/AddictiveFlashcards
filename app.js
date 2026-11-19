@@ -853,13 +853,18 @@ $('#topics .scrim').onclick = () => { $('#topics').hidden = true; SFX.close(); }
 const shuffle = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [a[i], a[j]] = [a[j], a[i]]; } return a; };
 // no topics picked = every topic. "Hardest" needs answer history, so it never includes unstudied cards.
 const hardMode = () => cfg.pMode === 'hard';
-const withNew = () => cfg.pNew && !hardMode();
+const fadeMode = () => cfg.pMode === 'fade';
+const ranked = () => hardMode() || fadeMode();     // modes that pick and order cards instead of shuffling
+const withNew = () => cfg.pNew && !ranked();
+// Fading: cards whose chance of recall (Anki's FSRS retrievability) is under 95% right now, lowest first.
+// Anki answers "prop:r<x" queries, so a few thresholds put every card in a band without downloading anything.
+const FADE_MAX = 0.95, FADE_BANDS = [0.5, 0.6, 0.7, 0.8, 0.9, FADE_MAX];
 // lectures only narrow practice when exactly one topic is picked (they're shown under it)
 const pLecs = (topics) => (topics.length === 1 ? cfg.pLectures.filter((k) => k.startsWith(topics[0] + '::')) : []);
 const practiceQuery = (topics, lecs = pLecs(topics)) => (cfg.deck ? `deck:${q(cfg.deck)} ` : '')
   + (lecs.length ? '(' + lecs.map((k) => 'tag:' + q('Lecture::' + k)).join(' OR ') + ') '
     : topics.length ? '(' + topics.map((t) => 'tag:' + q('Topic::' + t)).join(' OR ') + ') ' : '')
-  + '-is:suspended' + (withNew() ? '' : ' -is:new');
+  + '-is:suspended' + (withNew() ? '' : ' -is:new') + (fadeMode() ? ` prop:r<${FADE_MAX}` : '');
 
 // How badly you've been doing on a card, 0..1, from Anki's review log. Recent answers count most
 // (each older one ×0.75), Hard counts as 0.6 of an Again, answers while first learning a card count
@@ -890,9 +895,10 @@ function openPracticePick() {
 // Random / Hardest switch, and a start button that says exactly what you'll get
 function drawMode() {
   for (const b of $('#pMode').children) b.classList.toggle('on', b.dataset.mode === cfg.pMode);
-  $('#pNewRow').hidden = hardMode();
+  $('#pNewRow').hidden = ranked();
   $('#pModeNote').textContent = hardMode()
     ? "The cards you've pressed Hard or Again on most, judged from your recent answers in Anki. Worst first."
+    : fadeMode() ? "The cards you're most likely to have forgotten by now, including ones that aren't due yet. Most faded first."
     : 'A shuffled mix, whether or not the cards are due.';
   updateStartLabel();
 }
@@ -902,7 +908,7 @@ function updateStartLabel() {
   const lecs = pLecs(picked).sort(byLec);
   const from = lecs.length ? `${topicName(picked[0])} ${lecs.length > 3 ? `(${lecs.length} lectures)` : lecs.map((k) => 'L' + (lecNum(k) < 999 ? lecNum(k) : lecTitle(k))).join(', ')}`
     : picked.length ? picked.map(topicName).join(', ') : 'all topics';
-  $('#pStart').textContent = `Start · ${n} ${hardMode() ? 'hardest' : 'random'} from ${from}`;
+  $('#pStart').textContent = `Start · ${n} ${hardMode() ? 'hardest' : fadeMode() ? 'fading' : 'random'} from ${from}`;
 }
 for (const b of $('#pMode').children) b.onclick = () => { cfg.pMode = b.dataset.mode; saveCfg(); drawMode(); refreshPracticeCounts(); haptic(1); SFX.pick(); };
 let drawnTopics = [];
@@ -974,7 +980,8 @@ $('#pNew').onchange = (e) => { cfg.pNew = e.target.checked; saveCfg(); refreshPr
 async function loadPracticeCards(topics) {
   const want = cfg.pSize || Infinity;
   const pool = (await IDB.get('pcache')) || {};
-  const scores = LS.get('hardScores', {});       // last ranking, so "Hardest" also works offline
+  const scoreKey = fadeMode() ? 'fadeScores' : 'hardScores';
+  const scores = LS.get(scoreKey, {});           // last ranking, so "Hardest" and "Fading" also work offline
   if (!cfg.demo && cfg.url) {
     try {
       let ids = await anki('findCards', { query: practiceQuery(topics) }, 10000);
@@ -984,10 +991,18 @@ async function loadPracticeCards(topics) {
         for (const id of ids) { const h = hardness(logs[id] || []); if (h.score > 0.05) scores[id] = [h.score, h.why]; else delete scores[id]; }
         LS.set('hardScores', scores);
         ids = ids.filter((id) => scores[id]).sort((a, b) => scores[b][0] - scores[a][0]).slice(0, want);
+      } else if (fadeMode()) {
+        // which band each card falls in: the lowest threshold it's under (score: higher = more faded)
+        const base = practiceQuery(topics).replace(/ prop:r<[\d.]+$/, '');
+        const bands = (await anki('multi', { actions: FADE_BANDS.map((t) => ({ action: 'findCards', params: { query: `${base} prop:r<${t}` } })) }, 15000)).map(resIds);
+        for (const id of Object.keys(scores)) delete scores[id];
+        for (let b = FADE_BANDS.length - 1; b >= 0; b--) for (const id of bands[b]) scores[id] = [1 - FADE_BANDS[b] + Math.random() * 0.01, `fading · under ${Math.round(FADE_BANDS[b] * 100)}%`];
+        LS.set(scoreKey, scores);
+        ids = ids.filter((id) => scores[id]).sort((a, b) => scores[b][0] - scores[a][0]).slice(0, want);
       } else ids = shuffle(ids).slice(0, want);
       const ex = exAll || (await IDB.get('ex')) || await loadExplanations();
       let cards = await buildCards(await cardsInfo(ids), ex);
-      if (hardMode()) cards = cards.sort((a, b) => scores[b.id][0] - scores[a.id][0]).map((c) => ({ ...c, why: scores[c.id][1] }));
+      if (ranked()) cards = cards.sort((a, b) => scores[b.id][0] - scores[a.id][0]).map((c) => ({ ...c, why: scores[c.id][1] }));
       // keep them for offline practice next time (bounded, newest first)
       for (const c of cards) pool[c.id] = c;
       const keys = Object.keys(pool); if (keys.length > 1500) for (const k of keys.slice(0, keys.length - 1500)) delete pool[k];
@@ -1000,25 +1015,26 @@ async function loadPracticeCards(topics) {
   const have = new Map();
   for (const c of [...Object.values(pool), ...(practice ? practice.saved.deck : deck)]) {
     const lecs = pLecs(topics);
-    if ((!topics.length || topics.includes(c.topic)) && (!lecs.length || lecs.includes(c.lec)) && (withNew() || !c.isNew) && (!hardMode() || scores[c.id])) have.set(c.id, c);
+    if ((!topics.length || topics.includes(c.topic)) && (!lecs.length || lecs.includes(c.lec)) && (withNew() || !c.isNew) && (!ranked() || scores[c.id])) have.set(c.id, c);
   }
   if (have.size) toast('Offline · practising cards saved on this phone');
-  if (!hardMode()) return shuffle([...have.values()]).slice(0, want);
+  if (!ranked()) return shuffle([...have.values()]).slice(0, want);
   return [...have.values()].sort((a, b) => scores[b.id][0] - scores[a.id][0]).slice(0, want).map((c) => ({ ...c, why: scores[c.id][1] }));
 }
 
 async function startPractice(topics) {
-  $('#pMsg').textContent = hardMode() ? 'Finding your hardest cards…' : 'Loading cards…'; $('#pStart').disabled = true;
+  $('#pMsg').textContent = hardMode() ? 'Finding your hardest cards…' : fadeMode() ? 'Finding your fading cards…' : 'Loading cards…'; $('#pStart').disabled = true;
   let cards;
   try {
     if (cfg.demo) {
       cards = shuffle(deck.filter((c) => !topics.length || topics.includes(c.topic))).slice(0, cfg.pSize || Infinity);
-      if (hardMode()) toast('The demo has no answer history, so these are random');
+      if (ranked()) toast('The demo has no answer history, so these are random');
     } else cards = await loadPracticeCards(topics);
   } finally { $('#pStart').disabled = false; }
   if (!cards.length) {
     $('#pMsg').textContent = hardMode()
       ? "No cards you've been missing" + (topics.length ? ' in those topics' : '') + (online ? '. Nice!' : ' saved on this phone. Connect to Anki to rank them.')
+      : fadeMode() ? 'Nothing fading' + (topics.length ? ' in those topics' : '') + (online ? ". You'd remember them all right now." : ' saved on this phone. Connect to Anki to find them.')
       : 'No cards for those topics on this phone yet. Connect to Anki once to download them.';
     return;
   }

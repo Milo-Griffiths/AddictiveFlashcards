@@ -299,6 +299,7 @@ body:has(#flash.again) #stage { animation: shake .35s; }
 #practicePick, #practiceNow { display: grid; gap: 12px; }
 #practiceNow h2 { margin: 0; }
 .seg.two { grid-template-columns: 1fr 1fr; }
+.seg.three { grid-template-columns: repeat(3, 1fr); }
 #tabs button { font-weight: 600; }
 #tabs button.on { border-color: var(--accent); color: var(--accent); background: rgba(255,201,77,.08); }
 #tabs button[data-tab=practice].on { border-color: #c49cff; color: #c49cff; background: rgba(196,156,255,.1); }
