@@ -380,6 +380,7 @@ async function sync(refetch = true, all = false) {
     if (refetch) {
       const got = await fetchDeck(), fresh = got.today;
       lastFetch = Date.now();
+      Search.build();   // refresh the offline search index in the background (at most every 12 hours)
       const pending = new Set(queue.map((a) => a.cardId));
       ahead = got.ahead.filter((c) => !pending.has(c.id)); saveAhead();   // Anki's own schedule replaces any offline repeats
       if (stats.day !== today()) stats = { day: today(), reviewed: 0, best: 0, correct: 0 };
@@ -689,6 +690,7 @@ function showTab(tab) {
 }
 for (const b of $('#tabs').children) b.onclick = () => { showTab(b.dataset.tab); haptic(1); SFX.pick(); };
 function openTopics() {
+  Search.reset();
   $('#tabs').hidden = !!practice;
   if (practice) $('#reviewPick').hidden = $('#practicePick').hidden = true;
   else showTab(LS.get('tab', 'review'));
@@ -1201,6 +1203,7 @@ addEventListener('keydown', (e) => {
   if (Zoom.isOpen) { if (e.key === 'Escape' || e.key === ' ') { e.preventDefault(); Zoom.close(); } return; }
   if (!$('#ex').hidden) { if (e.key === 'Escape' || e.key === 'e') closeExplain(); return; }
   if (!$('#stats').hidden) { if (e.key === 'Escape') closeStats(); return; }
+  if (e.key === '/' && $('#sheet').hidden && $('#topics').hidden) { e.preventDefault(); openTopics(); SFX.open(); Search.focus(); return; }
   if (!$('#sheet').hidden || !$('#topics').hidden) return;
   if (e.key === 'e' && cur && curEl && curEl.classList.contains('revealed')) return openExplain(cur);
   if (e.key === 'z' || e.key === 'Backspace') { e.preventDefault(); return undo(); }
