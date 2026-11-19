@@ -162,6 +162,8 @@ You can find a note's ID in Anki's browser: select a card and open **Card Info**
 
 **Bad explanation?** At the bottom of the explanation sheet, this tags the note `FlowCards::BadExplanation` in Anki, so you can find ones to rewrite with the search `tag:FlowCards::BadExplanation`. Tap again to remove the flag.
 
+**Report a card.** Once a card is flipped, a faint flag sits in its bottom-right corner. Tap it to report a *Wrong answer*, an *Unclear question*, a *Confusing image* (on cards with a diagram) or a *Bad explanation*. Each one tags the note in Anki (`FlowCards::Report::WrongAnswer`, `::UnclearQuestion`, `::ConfusingImage`, or `FlowCards::BadExplanation`), so `tag:FlowCards::Report::*` finds everything reported. A reported card's flag turns red. Tap an option again to undo. Reports made offline are sent with your answers.
+
 **Code formatting:** multi-line `<code>` on cards becomes a left-aligned code block, and `` `backticks` `` in card text become inline code. Cards tagged `Topic::C` or `Topic::Haskell` also get syntax colouring.
 
 ## Making good cards

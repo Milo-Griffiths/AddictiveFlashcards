@@ -50,7 +50,7 @@ saveCfg();
 /* ---------- state ---------- */
 let deck = [];        // remaining cards (cards answered "again" are re-inserted)
 let queue = [];       // answers waiting to be pushed: {uid, cardId, ease, t}
-let tagQueue = [];    // "bad explanation" flags waiting to be pushed: {note, on}
+let tagQueue = [];    // flags waiting to be pushed as note tags: {note, on, tag} (no tag = bad explanation)
 // Cards for the coming days, downloaded ahead so you can study for a week without reaching Anki.
 // Each has `day` (the Anki day it's released on). `repeat` cards are the app's own re-showing of a card you
 // already answered offline: their answers stay on the phone, since Anki only takes the first one (see answer()).
@@ -71,6 +71,13 @@ function labelDays(s) {
 let practice = null;  // practice session: {topics, stats, saved: review state while practising}
 let exAll = null;     // last downloaded explanations file {noteId: html}
 const BAD_TAG = 'FlowCards::BadExplanation';
+// Card reports (the flag on a revealed card). Each is a note tag, so they can all be found in Anki later,
+// e.g. tag:FlowCards::Report::* in the browser. "Bad explanation" reuses the explanation sheet's flag.
+const REPORTS = {
+  answer: ['Wrong answer', 'FlowCards::Report::WrongAnswer'],
+  question: ['Unclear question', 'FlowCards::Report::UnclearQuestion'],
+  image: ['Confusing image', 'FlowCards::Report::ConfusingImage'],
+};
 let history = [];     // undo stack
 let cur = null, curEl = null, nextEl = null;
 let total = 0, doneCount = 0, combo = 0;
@@ -302,21 +309,27 @@ async function cardsInfo(ids) {
 
 // Turns AnkiConnect cardsInfo rows into our card objects (topic + flag from note tags, explanation, inlined images).
 async function buildCards(info, ex, extra = () => ({})) {
-  const noteIds = [...new Set(info.map((c) => c.note))], topicOf = {}, bad = new Set();
+  const noteIds = [...new Set(info.map((c) => c.note))], topicOf = {}, bad = new Set(), reps = {};
   for (let i = 0; i < noteIds.length; i += 200) {
     for (const n of await anki('notesInfo', { notes: noteIds.slice(i, i + 200) }, 20000)) {
       const tags = n.tags || [];
       const t = tags.find((x) => x.startsWith('Topic::'));
       if (t) topicOf[n.noteId] = t.slice(7);
       if (tags.some((x) => x.toLowerCase() === BAD_TAG.toLowerCase())) bad.add(n.noteId);
+      const lower = tags.map((x) => x.toLowerCase());
+      reps[n.noteId] = Object.keys(REPORTS).filter((k) => lower.includes(REPORTS[k][1].toLowerCase()));
     }
   }
   // flags still waiting to be sent win over what Anki says
-  for (const f of tagQueue) f.on ? bad.add(f.note) : bad.delete(f.note);
+  for (const f of tagQueue) {
+    if (!f.tag || f.tag === BAD_TAG) { f.on ? bad.add(f.note) : bad.delete(f.note); continue; }
+    const k = Object.keys(REPORTS).find((x) => REPORTS[x][1] === f.tag); if (!k) continue;
+    const r = new Set(reps[f.note] || []); f.on ? r.add(k) : r.delete(k); reps[f.note] = [...r];
+  }
   const cards = info.map((c) => ({
     id: c.cardId, note: c.note, deck: c.deckName, isNew: c.type === 0, learn: c.type === 1 || c.type === 3,
     phase: 'review', notBefore: 0,
-    topic: topicOf[c.note] || null, ex: (ex || {})[c.note] || null, bad: bad.has(c.note),
+    topic: topicOf[c.note] || null, ex: (ex || {})[c.note] || null, bad: bad.has(c.note), reports: reps[c.note] || [],
     q: clean(c.question), a: splitAnswer(c.question, c.answer),
     next: (c.nextReviews || []).map((s) => s.replace(/[⁨⁩]/g, '')),
     ...extra(c),
@@ -349,14 +362,17 @@ async function flush(all) {
   updateUndo();
 }
 
-// "Bad explanation" flags become a note tag in Anki, so a later batch can find them with tag:FlowCards::BadExplanation.
+// Flags become note tags in Anki (bad explanation, card reports), so a later batch can find them by tag.
 async function flushTags() {
   if (!tagQueue.length || cfg.demo) return;
   const batch = tagQueue.slice(), last = new Map();
-  for (const f of batch) if (f.note) last.set(f.note, f.on);   // only the final state per note matters
-  const on = [...last].filter(([, v]) => v).map(([n]) => n), off = [...last].filter(([, v]) => !v).map(([n]) => n);
-  if (on.length) await anki('addTags', { notes: on, tags: BAD_TAG });
-  if (off.length) await anki('removeTags', { notes: off, tags: BAD_TAG });
+  for (const f of batch) if (f.note) last.set((f.tag || BAD_TAG) + '\n' + f.note, f.on);   // only the final state per tag and note matters
+  const byTag = {};
+  for (const [k, v] of last) { const [tag, note] = k.split('\n'); (byTag[tag] = byTag[tag] || { on: [], off: [] })[v ? 'on' : 'off'].push(+note); }
+  for (const [tag, { on, off }] of Object.entries(byTag)) {
+    if (on.length) await anki('addTags', { notes: on, tags: tag });
+    if (off.length) await anki('removeTags', { notes: off, tags: tag });
+  }
   tagQueue = tagQueue.slice(batch.length);
   IDB.set('tags', tagQueue);
 }
@@ -436,7 +452,8 @@ function makeCard(c, isNext) {
   el.innerHTML = `<div class="lbl"></div>
     <div class="body"><div class="q"></div><div class="a"></div></div>
     <button class="exb" type="button" hidden>Explain</button>
-    <div class="foot"><span class="tag"></span><span class="iv"></span></div><div class="tint"></div>`;
+    <div class="foot"><span class="tag"></span><span class="iv"></span><button class="rep" type="button" aria-label="Report a problem with this card" hidden>
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4"/><path d="M5 4h11l-2 4 2 4H5"/></svg></button></div><div class="tint"></div>`;
   el.querySelector('.q').innerHTML = c.q;
   el.querySelector('.a').innerHTML = c.a;
   formatCode(el.querySelector('.body'), langOf(c), true);
@@ -445,6 +462,10 @@ function makeCard(c, isNext) {
   const b = el.querySelector('.exb');
   b.addEventListener('pointerdown', (e) => e.stopPropagation());
   b.addEventListener('click', (e) => { e.stopPropagation(); openExplain(c); });
+  const rb = el.querySelector('.rep');
+  rb.addEventListener('pointerdown', (e) => e.stopPropagation());
+  rb.addEventListener('click', (e) => { e.stopPropagation(); openReport(c); });
+  rb.classList.toggle('on', !!((c.reports && c.reports.length) || c.bad));
   return el;
 }
 
@@ -530,6 +551,7 @@ function revealedUI(el, c) {
   fit(el);
   if (!practice && c.next && c.next.length === 4) el.querySelector('.iv').textContent = `good · ${c.next[2]}`;
   if (c.ex) el.querySelector('.exb').hidden = false;
+  el.querySelector('.rep').hidden = false;
 }
 
 /* ---------- explanation sheet ---------- */
@@ -587,14 +609,62 @@ function updateBadBtn() {
   b.classList.toggle('on', on);
   b.innerHTML = on ? '<b>Flagged for a rewrite</b><small>Tap to unflag</small>' : '<b>Bad explanation?</b><small>Flag it to be rewritten</small>';
 }
-// Flags apply to the note, so every copy of it (review deck, parked deck, practice cache) is updated.
+// Flags apply to the note, so every copy of it (review deck, parked deck, week ahead, practice cache) is updated.
+function markNote(note, card, fn) {
+  const mark = (list) => { for (const c of list || []) if (c.note === note) fn(c); };
+  mark(deck); mark(ahead); if (practice) mark(practice.saved.deck); mark(history.map((h) => h.card)); fn(card);
+  if (curEl && cur && cur.note === note) curEl.querySelector('.rep').classList.toggle('on', !!((cur.reports && cur.reports.length) || cur.bad));
+  IDB.get('pcache').then((pc) => { if (pc) { mark(Object.values(pc)); IDB.set('pcache', pc); } });
+  saveAhead();
+}
+
+/* ---------- report a card ---------- */
+// The faint flag at the bottom right of a revealed card. One tap per problem, tap again to undo.
+let repCard = null, repChanged = false;
+function openReport(c) {
+  repCard = c; repChanged = false;
+  const hasImg = /<img|<svg/i.test(c.q + c.a);
+  const opts = [...Object.keys(REPORTS).filter((k) => k !== 'image' || hasImg).map((k) => [k, REPORTS[k][0]]), ...(c.ex ? [['ex', 'Bad explanation']] : [])];
+  const box = $('#repList'); box.innerHTML = '';
+  for (const [k, label] of opts) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'repopt'; b.dataset.k = k;
+    b.innerHTML = '<span></span><i></i>'; b.firstChild.textContent = label;
+    b.classList.toggle('on', k === 'ex' ? !!c.bad : (c.reports || []).includes(k));
+    b.onclick = () => toggleReport(k, b);
+    box.appendChild(b);
+  }
+  $('#report').hidden = false; haptic(1); SFX.open();
+}
+function toggleReport(k, b) {
+  const c = repCard; if (!c) return;
+  const on = !b.classList.contains('on'); b.classList.toggle('on', on); repChanged = true;
+  if (k === 'ex') {
+    markNote(c.note, c, (x) => { x.bad = on; });
+    if (!cfg.demo && c.note) tagQueue.push({ note: c.note, on, tag: BAD_TAG });
+  } else {
+    markNote(c.note, c, (x) => { const r = new Set(x.reports || []); on ? r.add(k) : r.delete(k); x.reports = [...r]; });
+    if (!cfg.demo && c.note) tagQueue.push({ note: c.note, on, tag: REPORTS[k][1] });
+  }
+  persist(); setStatus(); haptic(1); SFX.pick(on);
+}
+function closeReport() {
+  if ($('#report').hidden) return;
+  $('#report').hidden = true; SFX.close();
+  if (repChanged) {
+    const any = repCard && ((repCard.reports || []).length || repCard.bad);
+    toast(any ? (cfg.demo ? 'Reported (demo: not sent)' : 'Reported · tagged in Anki on next sync') : 'Report removed');
+    if (!cfg.demo) sync(false);
+  }
+  repCard = null;
+}
+$('#report .scrim').onclick = closeReport;
+$('#repDone').onclick = closeReport;
 $('#exBad').onclick = () => {
   if (!exCard) return;
   const on = !exCard.bad, note = exCard.note;
-  const mark = (list) => { for (const c of list || []) if (c.note === note) c.bad = on; };
-  mark(deck); if (practice) mark(practice.saved.deck); mark(history.map((h) => h.card)); exCard.bad = on;
-  IDB.get('pcache').then((pc) => { if (pc) { mark(Object.values(pc)); IDB.set('pcache', pc); } });
-  if (!cfg.demo && note) tagQueue.push({ note, on });
+  markNote(note, exCard, (c) => { c.bad = on; });
+  if (!cfg.demo && note) tagQueue.push({ note, on, tag: BAD_TAG });
   persist(); updateBadBtn(); setStatus();
   toast(on ? 'Flagged · tagged in Anki on next sync' : 'Flag removed');
   haptic(1); SFX.tick();
@@ -1111,7 +1181,7 @@ const stage = $('#stage');
 
 stage.addEventListener('pointerdown', (e) => {
   SFX.unlock();
-  if (!curEl || !$('#sheet').hidden || !$('#ex').hidden || !$('#topics').hidden || !$('#stats').hidden || Zoom.isOpen) return;
+  if (!curEl || !$('#sheet').hidden || !$('#ex').hidden || !$('#topics').hidden || !$('#stats').hidden || !$('#report').hidden || Zoom.isOpen) return;
   if (e.clientY > curEl.getBoundingClientRect().bottom) return;   // the strip under the card is the iPhone's home bar
   const body = curEl.querySelector('.body');
   drag = { x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, t0: performance.now(), mode: null, armed: false,
@@ -1201,6 +1271,7 @@ function dirOf(dx, dy) {
 // keyboard (desktop testing): space flips, arrows grade, z / backspace undoes
 addEventListener('keydown', (e) => {
   if (Zoom.isOpen) { if (e.key === 'Escape' || e.key === ' ') { e.preventDefault(); Zoom.close(); } return; }
+  if (!$('#report').hidden) { if (e.key === 'Escape') closeReport(); return; }
   if (!$('#ex').hidden) { if (e.key === 'Escape' || e.key === 'e') closeExplain(); return; }
   if (!$('#stats').hidden) { if (e.key === 'Escape') closeStats(); return; }
   if (e.key === '/' && $('#sheet').hidden && $('#topics').hidden) { e.preventDefault(); openTopics(); SFX.open(); Search.focus(); return; }
